@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <Core/LogUtil.h>
 
-using namespace rhi::shc;
+using namespace k3d::shc;
 
-rhi::shc::EDataType spirTypeToRHIAttribType(const spirv_cross::SPIRType& spirType)
+k3d::shc::EDataType spirTypeToRHIAttribType(const spirv_cross::SPIRType& spirType)
 {
 	EDataType result = EDataType::EUnknown;
 	switch (spirType.basetype)
@@ -61,19 +61,19 @@ rhi::shc::EDataType spirTypeToRHIAttribType(const spirv_cross::SPIRType& spirTyp
 	return result;
 }
 
-spv::ExecutionModel rhiShaderStageToSpvModel(rhi::EShaderType const& type)
+spv::ExecutionModel rhiShaderStageToSpvModel(k3d::EShaderType const& type)
 {
 	switch(type)
 	{
-		case rhi::ES_Vertex:
+		case k3d::ES_Vertex:
 			return spv::ExecutionModelVertex;
-		case rhi::ES_Fragment:
+		case k3d::ES_Fragment:
 			return spv::ExecutionModelFragment;
 	}
 	return spv::ExecutionModelVertex;
 }
 
-rhi::shc::EDataType spirTypeToGlslUniformDataType(const spirv_cross::SPIRType& spirType)
+k3d::shc::EDataType spirTypeToGlslUniformDataType(const spirv_cross::SPIRType& spirType)
 {
 	EDataType result = EDataType::EUnknown;
 	switch (spirType.basetype)
@@ -170,7 +170,7 @@ rhi::shc::EDataType spirTypeToGlslUniformDataType(const spirv_cross::SPIRType& s
 }
 
 void ExtractAttributeData(spirv_cross::CompilerGLSL const& backCompiler,
-	rhi::shc::Attributes & outShaderAttributes)
+	k3d::shc::Attributes & outShaderAttributes)
 {
 	for (auto& res : backCompiler.get_shader_resources().stage_inputs)
 	{
@@ -191,7 +191,7 @@ void ExtractAttributeData(spirv_cross::CompilerGLSL const& backCompiler,
 			std::begin(outShaderAttributes), std::end(outShaderAttributes),
 			[attrName](const Attribute& elem) -> bool
 		{
-			return elem.VarName == rhi::String(attrName.c_str());
+			return elem.VarName == k3d::String(attrName.c_str());
 		}
 		);
 
@@ -220,7 +220,7 @@ void ExtractAttributeData(spirv_cross::CompilerGLSL const& backCompiler,
 }
 
 void ExtractBlock(
-	rhi::EShaderType shaderType,
+	k3d::EShaderType shaderType,
 	const spirv_cross::Resource& res,
 	const spirv_cross::CompilerGLSL& backCompiler,
 	BindingTable & outUniformLayout)
@@ -236,7 +236,7 @@ void ExtractBlock(
 	std::string     bindingName = backCompiler.get_name(res.id);
 	uint32			bindingNumber = backCompiler.get_decoration(res.id, spv::DecorationBinding);
 	uint32			bindingSet = backCompiler.get_decoration(res.id, spv::DecorationDescriptorSet);
-	rhi::EShaderType bindingStage = shaderType;
+	k3d::EShaderType bindingStage = shaderType;
 	//		Binding			binding;
 	outUniformLayout.AddBinding({ bindingType, bindingName, bindingStage, bindingNumber })
 		.AddSet(bindingSet);
@@ -268,7 +268,7 @@ void ExtractBlock(
 }
 
 void ExtractUniformData(
-	rhi::EShaderType shaderStage,
+	k3d::EShaderType shaderStage,
 	spirv_cross::CompilerGLSL const& backCompiler,
 	BindingTable & outUniformLayout)
 {
@@ -282,7 +282,7 @@ void ExtractUniformData(
 		std::string         bindingName = backCompiler.get_name(res.id);
 		uint32              bindingNumber = backCompiler.get_decoration(res.id, spv::DecorationBinding);
 		uint32              bindingSet = backCompiler.get_decoration(res.id, spv::DecorationDescriptorSet);
-		rhi::EShaderType	bindingStage = shaderStage;
+		k3d::EShaderType	bindingStage = shaderStage;
 
 		outUniformLayout.AddBinding({ EBindType::ESampler, bindingName, bindingStage, bindingNumber }).AddSet(bindingSet);
 		//outUniformLayout->addSet(bindingSet, CHANGES_DONTCARE);
@@ -293,7 +293,7 @@ void ExtractUniformData(
 		std::string				bindingName = backCompiler.get_name(res.id);
 		uint32					bindingNumber = backCompiler.get_decoration(res.id, spv::DecorationBinding);
 		uint32					bindingSet = backCompiler.get_decoration(res.id, spv::DecorationDescriptorSet);
-		rhi::EShaderType		bindingStage = shaderStage;
+		k3d::EShaderType		bindingStage = shaderStage;
 
 		outUniformLayout.AddBinding({ EBindType::EStorageImage, bindingName, bindingStage, bindingNumber }).AddSet(bindingSet);
 	}
@@ -303,7 +303,7 @@ void ExtractUniformData(
 		std::string				bindingName = backCompiler.get_name(res.id);
 		uint32					bindingNumber = backCompiler.get_decoration(res.id, spv::DecorationBinding);
 		uint32					bindingSet = backCompiler.get_decoration(res.id, spv::DecorationDescriptorSet);
-		rhi::EShaderType		bindingStage = shaderStage;
+		k3d::EShaderType		bindingStage = shaderStage;
 
 		outUniformLayout.AddBinding({ EBindType::EStorageBuffer, bindingName, bindingStage, bindingNumber }).AddSet(bindingSet);
 	}

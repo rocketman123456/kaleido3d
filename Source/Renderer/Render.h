@@ -23,8 +23,6 @@ namespace render
 		Renderable();
 		virtual ~Renderable();
 		virtual void Prepare() = 0;
-		virtual void Render(rhi::ICommandContext *RHIContext) = 0;
-
 	protected:
 		bool			m_IsVisible;
 		kMath::Vec4f	m_Position;
@@ -47,7 +45,7 @@ namespace render
 		ERTDirect3D12,
 	};
 
-	using PtrRHIDevice = std::shared_ptr<rhi::IDevice>;
+	using PtrRHIDevice = std::shared_ptr<k3d::IDevice>;
 
 	/**
 	* Associated with RHI
@@ -73,11 +71,11 @@ namespace render
 
 		~RenderContext();
 
-		rhi::DeviceRef GetDevice() { return m_pDevice; }
+		k3d::DeviceRef GetDevice() { return m_pDevice; }
 		
 	protected:
 		RHIType					m_RhiType;
-		rhi::DeviceRef			m_pDevice;
+		k3d::DeviceRef			m_pDevice;
 		uint32 					m_Width = 0;
 		uint32 					m_Height = 0;
 	};

@@ -1,6 +1,6 @@
 #include "Public/ShaderCompiler.h"
 
-#if K3DPLATFORM_OS_WIN
+#if K3DPLATFORM_OS_WIN && ENABLE_D3D12_BUILD
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <d3d12shader.h>
@@ -9,7 +9,7 @@
 
 namespace k3d {
 
-	using namespace rhi::shc;
+	using namespace k3d::shc;
 
 	EDataType D3DSigTypeConvert(const D3D12_SIGNATURE_PARAMETER_DESC& desc)
 	{
@@ -83,28 +83,28 @@ namespace k3d {
 		return result;
 	}
 
-	const char * GetSMModel(rhi::EShaderType const& type)
+	const char * GetSMModel(k3d::EShaderType const& type)
 	{
 		switch (type)
 		{
-		case rhi::ES_Vertex:
+		case k3d::ES_Vertex:
 			return "vs_5_1";
-		case rhi::ES_Fragment:
+		case k3d::ES_Fragment:
 			return "ps_5_1";
-		case rhi::ES_Compute:
+		case k3d::ES_Compute:
 			return "cs_5_1";
-		case rhi::ES_Hull:
+		case k3d::ES_Hull:
 			return "hs_5_1";
-		case rhi::ES_Geometry:
+		case k3d::ES_Geometry:
 			return "gs_5_1";
 		default:
 			return "";
 		}
 	}
 
-	EResult DXCompiler::Compile(String const & src, rhi::ShaderDesc const & inOp, rhi::ShaderBundle & bundle)
+	EResult DXCompiler::Compile(String const & src, k3d::ShaderDesc const & inOp, k3d::ShaderBundle & bundle)
 	{
-		if (inOp.Format == rhi::EShFmt_Text && inOp.Lang == rhi::EShLang_HLSL && inOp.Profile == rhi::EShProfile_Modern)
+		if (inOp.Format == k3d::EShFmt_Text && inOp.Lang == k3d::EShLang_HLSL && inOp.Profile == k3d::EShProfile_Modern)
 		{
 
 #if defined(_DEBUG)
@@ -121,7 +121,7 @@ namespace k3d {
 				dwShaderFlags, 0,
 				ShaderBlob.GetAddressOf(), ErrorBlob.GetAddressOf());
 			bundle.Desc = inOp;
-			bundle.Desc.Format = rhi::EShFmt_ByteCode;
+			bundle.Desc.Format = k3d::EShFmt_ByteCode;
 			bundle.RawData = { ShaderBlob->GetBufferPointer(), ShaderBlob->GetBufferSize() };
 
 			ComPtr<ID3D12ShaderReflection> reflection;

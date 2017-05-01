@@ -5,8 +5,6 @@
 #include <Interface/IRHI.h>
 #include <RHI/Vulkan/Public/IVkRHI.h>
 
-using namespace rhi;
-
 class RendererWidget : public QWidget
 {
     Q_OBJECT
@@ -20,8 +18,7 @@ public slots:
 
 private:
   k3d::SharedPtr<k3d::IVkRHI> RHI;
-  rhi::DeviceRef Device;
-  rhi::RenderViewportRef RenderVp;
+  k3d::DeviceRef Device;
 };
 
 #endif // RENDERERWIDGET_H

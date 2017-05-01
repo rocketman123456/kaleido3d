@@ -2,7 +2,7 @@
 #ifndef __DXCompiler_h__
 #define __DXCompiler_h__
 
-#if _WIN32
+#if K3DPLATFORM_OS_WIN && ENABLE_D3D12_BUILD
 
 #include <d3dcommon.h>
 #include <wrl/client.h>
@@ -12,17 +12,17 @@ namespace k3d
 {
 	using namespace Microsoft::WRL;
 
-	class DXCompiler : public rhi::IShCompiler
+	class DXCompiler : public k3d::IShCompiler
 	{
 	public:
 		DXCompiler() {}
 		~DXCompiler() override {}
 
 		typedef ::k3d::SharedPtr<IShCompiler> Ptr;
-		virtual rhi::shc::EResult Compile(
+		virtual k3d::shc::EResult Compile(
 			String const& src,
-			rhi::ShaderDesc const& inOp,
-			rhi::ShaderBundle & bundle) override;
+			k3d::ShaderDesc const& inOp,
+			k3d::ShaderBundle & bundle) override;
 		const char *				GetVersion();
 	};
 }

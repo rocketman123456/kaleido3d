@@ -1,17 +1,16 @@
 #pragma once
 
+#include "../KTL/SharedPtr.hpp"
+#include "../Math/kGeometry.hpp"
+#include "RHIStructs.h"
 #include "ICrossShaderCompiler.h"
 
-namespace rhi {
+K3D_COMMON_NS
+{
 struct IObject
 {
   virtual void Release() = 0;
 };
-
-K3D_DEPRECATED("Use Command Buffer Instead")
-struct ICommandContext;
-typedef ::k3d::SharedPtr<ICommandContext> CommandContextRef;
-
 struct ICommandQueue;
 typedef ::k3d::SharedPtr<ICommandQueue> CommandQueueRef;
 struct ICommandBuffer;
@@ -21,11 +20,9 @@ typedef ::k3d::SharedPtr<IRenderCommandEncoder> RenderCommandEncoderRef;
 struct IComputeCommandEncoder;
 typedef ::k3d::SharedPtr<IComputeCommandEncoder> ComputeCommandEncoderRef;
 struct IParallelRenderCommandEncoder;
-typedef ::k3d::SharedPtr<IParallelRenderCommandEncoder> ParallelRenderCommandEncoderRef;
+typedef ::k3d::SharedPtr<IParallelRenderCommandEncoder>
+  ParallelRenderCommandEncoderRef;
 
-K3D_DEPRECATED("Use Factory Instead")
-struct IDeviceAdapter;
-typedef ::k3d::SharedPtr<IDeviceAdapter> DeviceAdapterRef;
 struct IDevice;
 typedef ::k3d::SharedPtr<IDevice> DeviceRef;
 struct IFactory;
@@ -54,10 +51,6 @@ struct IComputePipelineEncoder;
 typedef ::k3d::SharedPtr<IComputePipelineEncoder> ComputePipelineEncoderRef;
 struct ISwapChain;
 typedef ::k3d::SharedPtr<ISwapChain> SwapChainRef;
-K3D_DEPRECATED("Use Swapchain Instead")
-struct IRenderViewport;
-typedef ::k3d::SharedPtr<IRenderViewport> RenderViewportRef;
-struct IShaderBytes;
 struct ISampler;
 typedef ::k3d::SharedPtr<ISampler> SamplerRef;
 typedef const SamplerRef SamplerCRef;
@@ -176,43 +169,12 @@ struct ISyncFence
   virtual ~ISyncFence() {}
 };
 
-struct RenderTargetLayout
-{
-  struct Attachment
-  {
-    int Binding = -1;
-    EPixelFormat Format = EPF_RGBA8Unorm;
-  };
-  ::k3d::DynArray<Attachment> Attachments;
-  bool HasDepthStencil;
-  EPixelFormat DepthStencilFormat;
-};
-
 struct IRenderTarget
 {
   virtual ~IRenderTarget() {}
   virtual void SetClearColor(kMath::Vec4f clrColor) = 0;
   virtual void SetClearDepthStencil(float depth, uint32 stencil) = 0;
   virtual GpuResourceRef GetBackBuffer() = 0;
-};
-
-struct RenderPipelineStateDesc
-{
-  RenderPipelineStateDesc() {}
-  RasterizerState Rasterizer;
-  BlendState Blend;
-  DepthStencilState DepthStencil;
-  VertexInputState InputState;
-  // InputAssemblyState
-  EPrimitiveType PrimitiveTopology /* = rhi::EPT_Triangles */;
-  // Tessellation Patch
-  uint32 PatchControlPoints /* = 0*/;
-
-  ShaderBundle VertexShader;
-  ShaderBundle PixelShader;
-  ShaderBundle GeometryShader;
-  ShaderBundle DomainShader;
-  ShaderBundle HullShader;
 };
 
 struct ComputePipelineStateDesc
@@ -241,8 +203,6 @@ struct IRenderPipelineState : public IPipelineState
   virtual void SetBlendState(const BlendState&) = 0;
   virtual void SetDepthStencilState(const DepthStencilState&) = 0;
   virtual void SetPrimitiveTopology(const EPrimitiveType) = 0;
-  virtual void SetVertexInputLayout(rhi::VertexDeclaration const*,
-                                    uint32 Count) = 0;
   virtual void SetRenderTargetFormat(const RenderTargetFormat&) = 0;
   virtual void SetSampler(SamplerRef) = 0;
 };
@@ -252,53 +212,47 @@ struct IComputePipelineState : public IPipelineState
   virtual ~IComputePipelineState() {}
 };
 
-#if 0
-struct IPipelineEncoder
-{
-  virtual PipelineStateRef GetResult() = 0;
-  virtual IPipelineEncoder& SetPipelineLayout(PipelineLayoutRef const&) = 0;
-};
-
-struct IRenderPipelineEncoder : public IPipelineEncoder
-{
-  virtual void SetVertexShader(ShaderBundle const&) = 0;
-  virtual void SetPixelShader(ShaderBundle const&) = 0;
-  virtual void SetGeometryShader(ShaderBundle const&) = 0;
-  virtual void SetDomainShader(ShaderBundle const&) = 0;
-  virtual void SetHullShader(ShaderBundle const&) = 0;
-  virtual void SetRenderPass(RenderPassRef const&) = 0;
-  virtual void SetRasterizerState(const RasterizerState&) = 0;
-  virtual void SetBlendState(const BlendState&) = 0;
-  virtual void SetDepthStencilState(const DepthStencilState&) = 0;
-  virtual void SetPrimitiveTopology(const EPrimitiveType&) = 0;
-  virtual void SetVertexInputLayout(rhi::VertexInputState const&) = 0;
-  virtual void SetRenderTargetFormat(const RenderTargetFormat&) = 0;
-  virtual void SetSampler(SamplerRef) = 0;
-};
-
-struct IComputePipelineEncoder : public IPipelineEncoder
-{
-  virtual IComputePipelineEncoder& SetComputeShader(ShaderBundle const&) = 0;
-};
-#endif
-
 using PipelineLayoutDesc = shc::BindingTable;
 
-struct PipelineLayoutKey
+struct AttachmentDesc
 {
-  uint32 BindingKey = 0;
-  uint32 SetKey = 0;
-  uint32 UniformKey = 0;
-  bool operator==(PipelineLayoutKey const& rhs)
+  AttachmentDesc()
+    : LoadAction(ELA_Clear)
+    , StoreAction(ESA_Store)
   {
-    return BindingKey == rhs.BindingKey && SetKey == rhs.SetKey &&
-           UniformKey == rhs.UniformKey;
   }
-  bool operator<(PipelineLayoutKey const& rhs) const
-  {
-    return BindingKey < rhs.BindingKey || SetKey < rhs.SetKey ||
-           UniformKey < rhs.UniformKey;
-  }
+  ELoadAction LoadAction;
+  EStoreAction StoreAction;
+  TextureRef pTexture;
+};
+
+struct ColorAttachmentDesc : public AttachmentDesc
+{
+  kMath::Vec4f ClearColor;
+};
+
+using ColorAttachmentArray = k3d::DynArray<ColorAttachmentDesc>;
+
+struct DepthAttachmentDesc : public AttachmentDesc
+{
+  float ClearDepth;
+};
+
+struct StencilAttachmentDesc : public AttachmentDesc
+{
+  float ClearStencil;
+};
+
+struct RenderPassDesc
+{
+  ColorAttachmentArray ColorAttachments;
+  SharedPtr<DepthAttachmentDesc> pDepthAttachment;
+  SharedPtr<StencilAttachmentDesc> pStencilAttachment;
+};
+
+struct IRenderPass : public IObject
+{
+  virtual RenderPassDesc GetDesc() const = 0;
 };
 
 struct IDevice : public IObject
@@ -310,10 +264,7 @@ struct IDevice : public IObject
   };
 
   virtual ~IDevice() {}
-#if 0
-  K3D_DEPRECATED("Use CommandQueue & CommandBuffer Instead")
-  virtual CommandContextRef NewCommandContext(ECommandType) = 0;
-#endif
+
   virtual GpuResourceRef NewGpuResource(ResourceDesc const&) = 0;
   virtual ShaderResourceViewRef NewShaderResourceView(
     GpuResourceRef,
@@ -323,16 +274,15 @@ struct IDevice : public IObject
   virtual PipelineLayoutRef NewPipelineLayout(
     PipelineLayoutDesc const& table) = 0;
   virtual SyncFenceRef CreateFence() = 0;
-#if 0
-  K3D_DEPRECATED("Use Swapchain Instead")
-  virtual RenderViewportRef NewRenderViewport(void* winHandle,
-                                              RenderViewportDesc&) = 0;
-#endif
-  virtual RenderTargetRef NewRenderTarget(RenderTargetLayout const&) = 0;
+
+//  virtual RenderTargetRef NewRenderTarget(RenderTargetLayout const&) = 0;
+
+  virtual RenderPassRef CreateRenderPass(RenderPassDesc const&) = 0;
 
   virtual PipelineStateRef CreateRenderPipelineState(
     RenderPipelineStateDesc const&,
-    PipelineLayoutRef) = 0;
+    PipelineLayoutRef,
+    RenderPassRef) = 0;
 
   virtual PipelineStateRef CreateComputePipelineState(
     ComputePipelineStateDesc const&,
@@ -365,35 +315,6 @@ struct ISwapChain : public IObject
   virtual void Present() = 0;
   virtual TextureRef GetCurrentTexture() = 0;
 };
-
-#if 0
-K3D_DEPRECATED("Use Swapchain Instead")
-struct IRenderViewport
-{
-  virtual ~IRenderViewport() {}
-
-  virtual bool InitViewport(void* windowHandle,
-                            IDevice* pDevice,
-                            RenderViewportDesc&) = 0;
-
-  virtual void PrepareNextFrame() {}
-
-  /**
-   * @param	vSync	true to synchronise.
-   * @return	true if it succeeds, false if it fails.
-   */
-  virtual bool Present(bool vSync) = 0;
-
-  virtual RenderTargetRef GetRenderTarget(uint32 index) = 0;
-  virtual RenderTargetRef GetCurrentBackRenderTarget() = 0;
-
-  virtual uint32 GetSwapChainCount() = 0;
-  virtual uint32 GetSwapChainIndex() = 0;
-
-  virtual uint32 GetWidth() const = 0;
-  virtual uint32 GetHeight() const = 0;
-};
-#endif
 
 struct TextureCopyLocation
 {
@@ -435,26 +356,26 @@ struct ICommandQueue
 
 struct ICommandBuffer : public IObject
 {
-  virtual void Commit() = 0;
+  virtual void Commit(SyncFenceRef pFence = nullptr) = 0;
   // For Vulkan, This command will be appended to the tail
   virtual void Present(SwapChainRef pSwapChain, SyncFenceRef pFence) = 0;
   virtual void Reset() = 0;
   virtual RenderCommandEncoderRef RenderCommandEncoder(
-    RenderTargetRef const&,
-    RenderPipelineStateRef const&) = 0;
+    RenderPassDesc const&) = 0;
   virtual ComputeCommandEncoderRef ComputeCommandEncoder(
-    ComputePipelineStateRef const&) = 0;
+    ComputePipelineStateRef) = 0;
   virtual ParallelRenderCommandEncoderRef ParallelRenderCommandEncoder(
-    RenderTargetRef const&,
-    RenderPipelineStateRef const&) = 0;
-  // blit 
+    RenderPassDesc const&) = 0;
+  // blit
   virtual void CopyTexture(const TextureCopyLocation& Dest,
                            const TextureCopyLocation& Src) = 0;
   //
   virtual void CopyBuffer(GpuResourceRef Dest,
                           GpuResourceRef Src,
                           CopyBufferRegion const& Region) = 0;
-  virtual void Transition(GpuResourceRef pResource, rhi::EResourceState const& State/*, rhi::EPipelineStage const& Stage*/) = 0;
+  virtual void Transition(GpuResourceRef pResource,
+                          EResourceState const&
+                            State /*, rhi::EPipelineStage const& Stage*/) = 0;
 };
 
 struct ICommandEncoder
@@ -481,59 +402,11 @@ struct IComputeCommandEncoder : public ICommandEncoder
                         uint32 GroupCountY,
                         uint32 GroupCountZ) = 0;
 };
-//Begin with a single rendering pass, encoded from multiple threads simultaneously.
+// Begin with a single rendering pass, encoded from multiple threads
+// simultaneously.
 struct IParallelRenderCommandEncoder : public ICommandEncoder
 {
   virtual RenderCommandEncoderRef SubRenderCommandEncoder() = 0;
 };
 
-#if 0
-K3D_DEPRECATED("Use Command Buffer And Command Encoder Instead")
-struct ICommandContext
-{
-  virtual ~ICommandContext() {}
-
-  virtual void Detach(IDevice*) = 0;
-
-  /**
-   * Like D3D12 Do
-   */
-  virtual void CopyTexture(const TextureCopyLocation& Dest,
-                           const TextureCopyLocation& Src) = 0;
-
-  virtual void CopyBuffer(IGpuResource& Dest,
-                          IGpuResource& Src,
-                          CopyBufferRegion const& Region) = 0;
-  virtual void Execute(bool Wait) = 0;
-  virtual void Reset() = 0;
-  virtual void TransitionResourceBarrier(
-    GpuResourceRef resource,
-    /*EPipelineStage stage,*/ EResourceState dstState) = 0;
-
-  virtual void Begin() {}
-  virtual void End() {}
-  virtual void PresentInViewport(RenderViewportRef) = 0;
-
-  virtual void ClearColorBuffer(GpuResourceRef, kMath::Vec4f const&) = 0;
-
-  virtual void BeginRendering() = 0;
-  virtual void SetRenderTarget(RenderTargetRef) = 0;
-  virtual void SetScissorRects(uint32, const Rect*) = 0;
-  virtual void SetViewport(const ViewportDesc&) = 0;
-  virtual void SetIndexBuffer(const IndexBufferView& IBView) = 0;
-  virtual void SetVertexBuffer(uint32 Slot, const VertexBufferView& VBView) = 0;
-  virtual void SetPipelineState(uint32 HashCode, PipelineStateRef const&) = 0;
-  virtual void SetPipelineLayout(PipelineLayoutRef) = 0;
-  virtual void SetPrimitiveType(EPrimitiveType) = 0;
-  virtual void DrawInstanced(DrawInstancedParam) = 0;
-  virtual void DrawIndexedInstanced(DrawIndexedInstancedParam) = 0;
-  virtual void EndRendering() = 0;
-
-  virtual void Dispatch(uint32 GroupCountX,
-                        uint32 GroupCountY,
-                        uint32 GroupCountZ) = 0;
-
-  virtual void ExecuteBundle(ICommandContext*) {}
-};
-#endif
 }

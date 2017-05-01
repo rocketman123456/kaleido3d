@@ -26,9 +26,9 @@ void sFinializeGlSlang()
 #endif
 }
 
-rhi::shc::EDataType glTypeToRHIAttribType(int glType)
+k3d::shc::EDataType glTypeToRHIAttribType(int glType)
 {
-	using namespace rhi::shc;
+	using namespace k3d::shc;
 	switch (glType)
 	{
 	case GL_FLOAT:
@@ -60,9 +60,9 @@ rhi::shc::EDataType glTypeToRHIAttribType(int glType)
 }
 
 
-rhi::shc::EDataType glTypeToRHIUniformType(int glType)
+k3d::shc::EDataType glTypeToRHIUniformType(int glType)
 {
-	using namespace rhi::shc;
+	using namespace k3d::shc;
 	switch (glType)
 	{
 	case GL_FLOAT:
@@ -93,9 +93,9 @@ rhi::shc::EDataType glTypeToRHIUniformType(int glType)
 	return EDataType::EUnknown;
 }
 
-rhi::shc::EDataType glslangDataTypeToRHIDataType(const glslang::TType & type)
+k3d::shc::EDataType glslangDataTypeToRHIDataType(const glslang::TType & type)
 {
-	using namespace rhi::shc;
+	using namespace k3d::shc;
 	switch (type.getBasicType()) {
 	case EbtSampler:
 		//return mapSamplerToGlType(type.getSampler());
@@ -170,9 +170,9 @@ rhi::shc::EDataType glslangDataTypeToRHIDataType(const glslang::TType & type)
 	return EDataType::EUnknown;
 }
 
-rhi::shc::EBindType glslangTypeToRHIType(const TBasicType & type)
+k3d::shc::EBindType glslangTypeToRHIType(const TBasicType & type)
 {
-	using namespace rhi::shc;
+	using namespace k3d::shc;
 	switch (type) 
 	{
 	case EbtSampler:
@@ -284,25 +284,25 @@ void initResources(TBuiltInResource &resources)
 	resources.limits.generalConstantMatrixVectorIndexing = 1;
 }
 
-EShLanguage findLanguage(const rhi::EShaderType shader_type)
+EShLanguage findLanguage(const k3d::EShaderType shader_type)
 {
 	switch (shader_type) {
-	case rhi::ES_Vertex:
+	case k3d::ES_Vertex:
 		return EShLangVertex;
 
-	case rhi::ES_Hull:
+	case k3d::ES_Hull:
 		return EShLangTessControl;
 
-	case rhi::ES_Domain:
+	case k3d::ES_Domain:
 		return EShLangTessEvaluation;
 
-	case rhi::ES_Geometry:
+	case k3d::ES_Geometry:
 		return EShLangGeometry;
 
-	case rhi::ES_Fragment:
+	case k3d::ES_Fragment:
 		return EShLangFragment;
 
-	case rhi::ES_Compute:
+	case k3d::ES_Compute:
 		return EShLangCompute;
 
 	default:
@@ -310,7 +310,7 @@ EShLanguage findLanguage(const rhi::EShaderType shader_type)
 	}
 }
 
-void ExtractAttributeData(const glslang::TProgram& program, rhi::shc::Attributes& shAttributes)
+void ExtractAttributeData(const glslang::TProgram& program, k3d::shc::Attributes& shAttributes)
 {
 	auto numAttrs = program.getNumLiveAttributes();
 	if (numAttrs > 0)
@@ -319,14 +319,14 @@ void ExtractAttributeData(const glslang::TProgram& program, rhi::shc::Attributes
 		{
 			auto name = program.getAttributeName(i);
 			auto type = program.getAttributeType(i);
-			shAttributes.Append({ name, rhi::shc::ESemantic::ENumSemanics, glTypeToRHIAttribType(type), i, 0, 0 });
+			shAttributes.Append({ name, k3d::shc::ESemantic::ENumSemanics, glTypeToRHIAttribType(type), i, 0, 0 });
 		}
 	}
 }
 
-void ExtractUniformData(rhi::EShaderType const& stype, const glslang::TProgram& program, rhi::shc::BindingTable& outUniformLayout)
+void ExtractUniformData(k3d::EShaderType const& stype, const glslang::TProgram& program, k3d::shc::BindingTable& outUniformLayout)
 {
-	using namespace rhi::shc;
+	using namespace k3d::shc;
 	auto numUniforms = program.getNumLiveUniformVariables();
 	for (int i = 0; i < numUniforms; i++)
 	{
@@ -337,12 +337,12 @@ void ExtractUniformData(rhi::EShaderType const& stype, const glslang::TProgram& 
 		auto qualifier = type->getQualifier();
 		if (qualifier.hasBinding())
 		{
-			rhi::shc::EBindType bind = glslangTypeToRHIType(baseType);
+			k3d::shc::EBindType bind = glslangTypeToRHIType(baseType);
 			if (baseType == EbtSampler)
 			{
 				if (type->getSampler().isCombined())
 				{
-					bind = rhi::shc::EBindType::ESamplerImageCombine;
+					bind = k3d::shc::EBindType::ESamplerImageCombine;
 				}
 				switch (type->getSampler().dim)
 				{
@@ -351,7 +351,7 @@ void ExtractUniformData(rhi::EShaderType const& stype, const glslang::TProgram& 
 				case Esd3D:
 				case EsdCube:
 				case EsdRect:
-					bind = rhi::shc::EBindType::ESampledImage;
+					bind = k3d::shc::EBindType::ESampledImage;
 					break;
 				}
 			}

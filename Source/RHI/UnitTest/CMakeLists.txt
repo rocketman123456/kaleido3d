@@ -24,25 +24,25 @@ add_unittest(
 	3.Triangle.cpp
 )
 
-add_unittest(
-	RHI-UnitTest-4.TexturedCube
-	4.TexturedCube.cpp
-	Base/TextureObject.h
-	Base/TextureObject.cpp
-)
+#add_unittest(
+#	RHI-UnitTest-4.TexturedCube
+#	4.TexturedCube.cpp
+#	Base/TextureObject.h
+#	Base/TextureObject.cpp
+#)
 #target_link_libraries(RHI-UnitTest-4.TexturedCube ${STEAMSDK_LIBRARY})
 
-add_unittest(
-	RHI-UnitTest-5.ComputeParticles
-	5.ComputeParticles.cpp
-)
+#add_unittest(
+#	RHI-UnitTest-5.ComputeParticles
+#	5.ComputeParticles.cpp
+#)
 
-add_unittest(
-	RHI-UnitTest-6.MultiThreadRendering
-	6.MultiThreadRendering.cpp
-)
+#add_unittest(
+#	RHI-UnitTest-6.MultiThreadRendering
+#	6.MultiThreadRendering.cpp
+#)
 
-add_unittest(
-	RHI-UnitTest-7.MultipleRenderTargets
-	7.MultipleRenderTargets.cpp
-)
+#add_unittest(
+#	RHI-UnitTest-7.MultipleRenderTargets
+#	7.MultipleRenderTargets.cpp
+#)

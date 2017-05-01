@@ -7,7 +7,7 @@ namespace k3d
     class IMetalRHI : public IModule
     {
     public:
-        virtual rhi::DeviceRef	GetPrimaryDevice() = 0;
+        virtual DeviceRef	GetPrimaryDevice() = 0;
     };
 }
 

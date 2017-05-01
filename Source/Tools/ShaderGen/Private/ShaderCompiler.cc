@@ -2,15 +2,14 @@
 #include "Public/ShaderCompiler.h"
 #include <Core/LogUtil.h>
 #include "GLSLCompiler.h"
-#if _WIN32
+#if K3DPLATFORM_OS_WIN && ENABLE_D3D12_BUILD
 #include "DXCompiler.h"
 #endif
 #include "MetalCompiler.h"
 
 using namespace k3d;
-using namespace rhi;
 
-class ShaderCompilerModule : public rhi::IShModule
+class ShaderCompilerModule : public k3d::IShModule
 {
 public:
 	ShaderCompilerModule() {}
@@ -29,7 +28,7 @@ public:
 		{
 		case ERHI_Vulkan:
 			return MakeShared<GLSLangCompiler>();
-#if K3DPLATFORM_OS_WIN
+#if K3DPLATFORM_OS_WIN && ENABLE_D3D12_BUILD
 		case ERHI_D3D12:
 			break;
 #endif

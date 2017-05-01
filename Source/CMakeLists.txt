@@ -18,10 +18,11 @@ include(Common)
 include(NDKStlConfig)
 
 find_package(ThirdParty)
+find_package(LibClang)
 
 option(BUILD_SHARED "Build runtime library as shared libs" ON)
 option(BUILD_WITH_EDITOR "Build With Editor" OFF)
-option(BUILD_WITH_CPP_REFLECTOR "Build with CppReflector" OFF)
+#option(BUILD_WITH_CPP_REFLECTOR "Build with CppReflector" OFF)
 option(BUILD_WITH_D3D12 "Build With D3D12 RHI" OFF)
 option(BUILD_WITH_V8 "Build With V8 Script Module" OFF)
 option(BUILD_WITH_UNIT_TEST "Build With Unit Test" ON)
@@ -48,6 +49,10 @@ endif()
 
 if(ENABLE_SHAREDPTR_TRACK)
 	add_definitions(-DENABLE_SHAREDPTR_TRACKER=1)
+endif()
+
+if(BUILD_WITH_D3D12)
+	add_definitions(-DENABLE_D3D12_BUILD=1)
 endif()
 
 message(STATUS "compiler is ${CMAKE_CXX_COMPILER_ID}" ) 
@@ -133,9 +138,10 @@ endif()
 
 add_subdirectory(Tools/ShaderGen)
 
-if(BUILD_WITH_CPP_REFLECTOR)
+if(LibClang_FOUND)
+message(STATUS "libclang found, cpp_reflector will be built!")
 add_subdirectory(Tools/CppReflector)
-endif(BUILD_WITH_CPP_REFLECTOR)
+endif(LibClang_FOUND)
 
 if(BUILD_WITH_EDITOR)
 	set(CMAKE_AUTOMOC ON)

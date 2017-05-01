@@ -19,11 +19,8 @@ set(RHI_HEADERS
 set(RHI_IMPL_SRCS
 	Private/VkConfig.h
 	Private/VkRHI.h
-	Private/VkObjects.h
-	Private/VkObjects.cpp
 	Private/DynVulkanLoader.h
 	Private/VkEnums.h
-	Private/VkCommandContext.cpp
 	Private/VkResource.cpp
 	Private/VkImpl.cpp
 	Private/DynVulkanLoader.cpp
@@ -52,7 +49,7 @@ source_group(
 add_plugin(RHI_Vulkan 
 	FOLDER "Runtime/RHI" 
 	SRCS ${VKRHI_SRC_LIST} ${RHI_HEADERS} ${RHI_IMPL_SRCS} 
-	LIBS ShaderCompiler ${VULKAN_LIB})
+	LIBS RHIUtil ShaderCompiler ${VULKAN_LIB})
 
 if(NOT ANDROID)
 	add_precompiled_header(RHI_Vulkan "VkCommon.h" "${Kaleido3D_ROOT_DIR}/Source/RHI/Vulkan" "${Kaleido3D_ROOT_DIR}/Source/RHI/Vulkan/Private/VkImpl.cpp")

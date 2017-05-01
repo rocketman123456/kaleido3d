@@ -4,14 +4,14 @@
 
 namespace k3d
 {
-    class MetalCompiler : public rhi::IShCompiler
+    class MetalCompiler : public k3d::IShCompiler
     {
     public:
         MetalCompiler();
         ~MetalCompiler() override;
-        rhi::shc::EResult	Compile(String const& src,
-                                    rhi::ShaderDesc const& inOp,
-                                    rhi::ShaderBundle & bundle) override;
+        k3d::shc::EResult	Compile(String const& src,
+                                    k3d::ShaderDesc const& inOp,
+                                    k3d::ShaderBundle & bundle) override;
         const char *        GetVersion();
     
     private:

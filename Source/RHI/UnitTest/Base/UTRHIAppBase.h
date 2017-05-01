@@ -50,18 +50,18 @@ public:
   }
 
   void Compile(const char* shaderPath,
-               rhi::EShaderType const& type,
-               rhi::ShaderBundle& shader);
+               k3d::EShaderType const& type,
+               k3d::ShaderBundle& shader);
 
 protected:
-  SharedPtr<rhi::IShModule> m_ShaderModule;
-  rhi::IShCompiler::Ptr m_RHICompiler;
+  SharedPtr<k3d::IShModule> m_ShaderModule;
+  k3d::IShCompiler::Ptr m_RHICompiler;
   SharedPtr<IModule> m_RHIModule;
 
-  rhi::FactoryRef m_pFactory;
-  rhi::DeviceRef m_pDevice;
-  rhi::CommandQueueRef m_pQueue;
-  rhi::SwapChainRef m_pSwapChain;
+  k3d::FactoryRef m_pFactory;
+  k3d::DeviceRef m_pDevice;
+  k3d::CommandQueueRef m_pQueue;
+  k3d::SwapChainRef m_pSwapChain;
   
   uint32 m_Width;
   uint32 m_Height;
@@ -72,11 +72,11 @@ private:
   void InitializeRHIObjects();
 
 private:
-  rhi::SwapChainDesc m_SwapChainDesc = { rhi::EPF_RGB8Unorm,
+  k3d::SwapChainDesc m_SwapChainDesc = { k3d::EPF_RGBA8Unorm,
                                          m_Width,
                                          m_Height,
                                          2 };
-  DynArray<rhi::DeviceRef> m_Devices;
+  DynArray<k3d::DeviceRef> m_Devices;
   bool m_EnableValidation;
 };
 
@@ -84,12 +84,12 @@ void
 RHIAppBase::LoadGlslangCompiler()
 {
   m_ShaderModule =
-    k3d::StaticPointerCast<rhi::IShModule>(ACQUIRE_PLUGIN(ShaderCompiler));
+    k3d::StaticPointerCast<k3d::IShModule>(ACQUIRE_PLUGIN(ShaderCompiler));
   if (m_ShaderModule) {
 #if K3DPLATFORM_OS_MAC
-    m_RHICompiler = m_ShaderModule->CreateShaderCompiler(rhi::ERHI_Metal);
+    m_RHICompiler = m_ShaderModule->CreateShaderCompiler(k3d::ERHI_Metal);
 #else
-    m_RHICompiler = m_ShaderModule->CreateShaderCompiler(rhi::ERHI_Vulkan);
+    m_RHICompiler = m_ShaderModule->CreateShaderCompiler(k3d::ERHI_Vulkan);
 #endif
   }
 }
@@ -118,17 +118,17 @@ RHIAppBase::LoadRHI()
 inline void
 RHIAppBase::InitializeRHIObjects()
 {
-  m_pQueue = m_pDevice->CreateCommandQueue(rhi::ECMD_Graphics);
+  m_pQueue = m_pDevice->CreateCommandQueue(k3d::ECMD_Graphics);
   m_pSwapChain = m_pFactory->CreateSwapchain(
     m_pQueue, HostWindow()->GetHandle(), m_SwapChainDesc);
 
-  auto cmd = m_pQueue->ObtainCommandBuffer(rhi::ECMDUsage_OneShot);
+  auto cmd = m_pQueue->ObtainCommandBuffer(k3d::ECMDUsage_OneShot);
 }
 
 void
 RHIAppBase::Compile(const char* shaderPath,
-                    rhi::EShaderType const& type,
-                    rhi::ShaderBundle& shader)
+                    k3d::EShaderType const& type,
+                    k3d::ShaderBundle& shader)
 {
   IAsset* shaderFile = AssetManager::Open(shaderPath);
   if (!shaderFile) {
@@ -141,8 +141,8 @@ RHIAppBase::Compile(const char* shaderPath,
   shaderFile->Read(buffer.data(), shaderFile->GetLength());
   buffer[len] = 0;
   String src(buffer.data());
-  rhi::ShaderDesc desc = {
-    rhi::EShFmt_Text, rhi::EShLang_HLSL, rhi::EShProfile_Modern, type, "main"
+  k3d::ShaderDesc desc = {
+    k3d::EShFmt_Text, k3d::EShLang_HLSL, k3d::EShProfile_Modern, type, "main"
   };
   m_RHICompiler->Compile(src, desc, shader);
 }

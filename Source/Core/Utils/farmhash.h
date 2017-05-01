@@ -89,19 +89,19 @@ uint32_t K3D_API Hash32(const char* s, size_t len);
 // hashed into the result.
 // May change from time to time, may differ on different platforms, may differ
 // depending on NDEBUG.
-uint32_t Hash32WithSeed(const char* s, size_t len, uint32_t seed);
+uint32_t K3D_API Hash32WithSeed(const char* s, size_t len, uint32_t seed);
 
 // Hash 128 input bits down to 64 bits of output.
 // Hash function for a byte array.
 // May change from time to time, may differ on different platforms, may differ
 // depending on NDEBUG.
-uint64_t Hash64(const char* s, size_t len);
+uint64_t K3D_API Hash64(const char* s, size_t len);
 
 // Hash function for a byte array.  For convenience, a 64-bit seed is also
 // hashed into the result.
 // May change from time to time, may differ on different platforms, may differ
 // depending on NDEBUG.
-uint64_t Hash64WithSeed(const char* s, size_t len, uint64_t seed);
+uint64_t K3D_API Hash64WithSeed(const char* s, size_t len, uint64_t seed);
 
 // Hash function for a byte array.  For convenience, two seeds are also
 // hashed into the result.

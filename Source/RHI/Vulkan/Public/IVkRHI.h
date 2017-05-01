@@ -14,7 +14,7 @@ class IVkRHI : public IModule
 public:
   // Create Factory
   virtual void Initialize(const char* appName, bool debug) = 0;
-  virtual rhi::FactoryRef GetFactory() = 0;
+  virtual FactoryRef GetFactory() = 0;
 };
 }
 

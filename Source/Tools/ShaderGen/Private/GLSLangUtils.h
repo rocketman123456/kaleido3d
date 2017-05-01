@@ -6,11 +6,11 @@ void sInitializeGlSlang();
 void sFinializeGlSlang();
 
 void initResources(TBuiltInResource &resources);
-EShLanguage findLanguage(const rhi::EShaderType shader_type);
-rhi::shc::EDataType glTypeToRHIAttribType(int glType);
-rhi::shc::EDataType glTypeToRHIUniformType(int glType);
-rhi::shc::EDataType glslangDataTypeToRHIDataType(const glslang::TType& type);
-rhi::shc::EBindType glslangTypeToRHIType(const glslang::TBasicType& type);
+EShLanguage findLanguage(const k3d::EShaderType shader_type);
+k3d::shc::EDataType glTypeToRHIAttribType(int glType);
+k3d::shc::EDataType glTypeToRHIUniformType(int glType);
+k3d::shc::EDataType glslangDataTypeToRHIDataType(const glslang::TType& type);
+k3d::shc::EBindType glslangTypeToRHIType(const glslang::TBasicType& type);
 
-void ExtractAttributeData(const glslang::TProgram& program, rhi::shc::Attributes& shAttributes);
-void ExtractUniformData(rhi::EShaderType const& type, const glslang::TProgram& program, rhi::shc::BindingTable& outUniformLayout);
+void ExtractAttributeData(const glslang::TProgram& program, k3d::shc::Attributes& shAttributes);
+void ExtractUniformData(k3d::EShaderType const& type, const glslang::TProgram& program, k3d::shc::BindingTable& outUniformLayout);

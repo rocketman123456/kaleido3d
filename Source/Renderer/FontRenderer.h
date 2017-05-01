@@ -42,12 +42,12 @@ private:
 class CharTexture
 {
 public:
-  CharTexture(rhi::DeviceRef device, TextQuad const& quad);
+  CharTexture(k3d::DeviceRef device, TextQuad const& quad);
   ~CharTexture();
-  rhi::TextureRef GetTexture() const { return m_Texture; }
+  k3d::TextureRef GetTexture() const { return m_Texture; }
 
 private:
-  rhi::TextureRef m_Texture;
+  k3d::TextureRef m_Texture;
 };
 
 class CharRenderer
@@ -56,7 +56,7 @@ public:
   CharRenderer();
   ~CharRenderer();
 
-  void InitVertexBuffers(rhi::DeviceRef const& device);
+  void InitVertexBuffers(k3d::DeviceRef const& device);
 
 private:
   static short s_Indices[];
@@ -64,23 +64,19 @@ private:
   static float s_CharTexCoords[];
 
 private:
-  rhi::GpuResourceRef m_VertexBuffer;
-  rhi::GpuResourceRef m_IndexBuffer;
+  k3d::GpuResourceRef m_VertexBuffer;
+  k3d::GpuResourceRef m_IndexBuffer;
 };
 
 class FontRenderer
 {
 public:
-  explicit FontRenderer(rhi::DeviceRef const& device);
+  explicit FontRenderer(k3d::DeviceRef const& device);
   ~FontRenderer();
   void InitPSO();
-  void DrawText2D(rhi::CommandContextRef const& cmd,
-                  const ::k3d::String& text,
-                  float x,
-                  float y);
 private:
-  rhi::DeviceRef m_Device;
-  rhi::RenderPipelineStateRef m_TextRenderPSO;
+  k3d::DeviceRef m_Device;
+  k3d::RenderPipelineStateRef m_TextRenderPSO;
   FontManager m_FontManager;
   std::unordered_map<char, CharTexture> m_TexCache;
 };

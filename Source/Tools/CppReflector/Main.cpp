@@ -6,6 +6,7 @@
 #include "Kaleido3D.h"
 #include <KTL/String.hpp>
 #include <KTL/DynArray.hpp>
+#include <Core/LogUtil.h>
 #include "Reflector.h"
 using namespace std;
 
@@ -18,12 +19,20 @@ ostream& operator<<(ostream& stream, const CXString& str)
 
 int main(int argc, const char* argv[])
 {
+  // example command: D:\project\kaleido3d\Include\Interface\IRHI.h -- -x c++ -std=c++14 -g -DK3D_CPP_REFLECTOR
+  const char * file = argv[1];
+  const char ** arv_ = argv + 3;
   CXIndex index = clang_createIndex(0, 0);
   CXTranslationUnit unit = clang_parseTranslationUnit(
     index,
-    "C:/Users/dsotsen/Documents/Project/kaleido3d/Include/Interface/IRHI.h", nullptr, 0,
+    file, arv_, argc-3,
     nullptr, 0,
     CXTranslationUnit_None);
+  if (unit == nullptr)
+  {
+    KLOG(Fatal, CppReflector, "Unable to parse translation unit. Quitting.");
+    exit(-1);
+  }
   k3d::Cursor cur(clang_getTranslationUnitCursor(unit));
   auto childs = cur.GetChildren();
   for (auto c : childs)
@@ -31,21 +40,6 @@ int main(int argc, const char* argv[])
     auto string = c.GetName();
     (string);
   }
- /* clang_visitChildren(
-    cursor,
-    [](CXCursor c, CXCursor parent, CXClientData client_data)
-  {
-    cout << "Cursor '" << clang_getCursorSpelling(c) << "' of kind '"
-      << clang_getCursorKindSpelling(clang_getCursorKind(c)) << clang_getCursorUSR(c) << "'\n";
-    return CXChildVisit_Recurse;
-  },
-    nullptr);*/
-  if (unit == nullptr)
-  {
-    cerr << "Unable to parse translation unit. Quitting." << endl;
-    exit(-1);
-  }
-
   clang_disposeTranslationUnit(unit);
   clang_disposeIndex(index);
   return 0;

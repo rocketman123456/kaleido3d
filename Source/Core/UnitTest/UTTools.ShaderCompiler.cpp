@@ -16,17 +16,17 @@ void TestShaderCompiler()
     String vertexSource((const char*)vShFile.FileData());
     vShFile.Close();
         
-	auto shMod = StaticPointerCast<rhi::IShModule>(GlobalModuleManager.FindModule("ShaderCompiler"));
+	auto shMod = StaticPointerCast<k3d::IShModule>(GlobalModuleManager.FindModule("ShaderCompiler"));
 	if (shMod)
 	{
 		// test compile
-		SharedPtr<rhi::IShCompiler> vkCompiler = shMod->CreateShaderCompiler(rhi::ERHI_Vulkan);
+		SharedPtr<k3d::IShCompiler> vkCompiler = shMod->CreateShaderCompiler(k3d::ERHI_Vulkan);
 		if (vkCompiler)
 		{
-			rhi::ShaderDesc desc = { rhi::EShFmt_Text, rhi::EShLang_GLSL, rhi::EShProfile_Modern, rhi::ES_Vertex, "main" };
-			rhi::ShaderBundle bundle;
+			k3d::ShaderDesc desc = { k3d::EShFmt_Text, k3d::EShLang_GLSL, k3d::EShProfile_Modern, k3d::ES_Vertex, "main" };
+			k3d::ShaderBundle bundle;
 			auto ret = vkCompiler->Compile(vertexSource, desc, bundle);
-			K3D_ASSERT(ret == rhi::shc::E_Ok);
+			K3D_ASSERT(ret == k3d::shc::E_Ok);
 
 			// test shader serialize
 			Os::File shBundle;
@@ -44,7 +44,7 @@ void TestShaderCompiler()
 
 			// test shader deserialize;
 			Os::File shBundleRead;
-			rhi::ShaderBundle bundleRead;
+			k3d::ShaderBundle bundleRead;
 			shBundleRead.Open(KT("shaderbundle.sh"), IORead);
 			Archive readar;
 			readar.SetIODevice(&shBundleRead);
@@ -52,29 +52,29 @@ void TestShaderCompiler()
 			shBundleRead.Close();
 
 			// test hlsl compile
-			rhi::ShaderBundle hlslBundle;
+			k3d::ShaderBundle hlslBundle;
 			Os::MemMapFile hlslVertFile;
 			hlslVertFile.Open("../../Data/Test/TestMaterial.hlsl", IOFlag::IORead);
-			rhi::ShaderDesc hlsldesc = { rhi::EShFmt_Text, rhi::EShLang_HLSL, rhi::EShProfile_Modern, rhi::ES_Vertex, "main" };
+			k3d::ShaderDesc hlsldesc = { k3d::EShFmt_Text, k3d::EShLang_HLSL, k3d::EShProfile_Modern, k3d::ES_Vertex, "main" };
 			auto hlslret = vkCompiler->Compile(String((const char*)hlslVertFile.FileData()), hlsldesc, hlslBundle);
-			K3D_ASSERT(hlslret == rhi::shc::E_Ok);
+			K3D_ASSERT(hlslret == k3d::shc::E_Ok);
 
 			// test spirv reflect
 			Os::MemMapFile spirvFileRead;
-			rhi::ShaderBundle spirvBundle;
+			k3d::ShaderBundle spirvBundle;
 			spirvFileRead.Open(KT("triangle.spv"), IORead);
-			rhi::ShaderDesc spirvDesc = { rhi::EShFmt_ByteCode, rhi::EShLang_GLSL, rhi::EShProfile_Modern, rhi::ES_Vertex, "main" };
+			k3d::ShaderDesc spirvDesc = { k3d::EShFmt_ByteCode, k3d::EShLang_GLSL, k3d::EShProfile_Modern, k3d::ES_Vertex, "main" };
 			auto spirvRet = vkCompiler->Compile(String(spirvFileRead.FileData(), spirvFileRead.GetSize()), spirvDesc, spirvBundle);
-			K3D_ASSERT(spirvRet == rhi::shc::E_Ok);
+			K3D_ASSERT(spirvRet == k3d::shc::E_Ok);
 		}
             
-        SharedPtr<rhi::IShCompiler> mtlCompiler = shMod->CreateShaderCompiler(rhi::ERHI_Metal);
+        SharedPtr<k3d::IShCompiler> mtlCompiler = shMod->CreateShaderCompiler(k3d::ERHI_Metal);
         if(mtlCompiler)
         {
-            rhi::ShaderDesc desc = { rhi::EShFmt_Text, rhi::EShLang_GLSL, rhi::EShProfile_Modern, rhi::ES_Vertex, "main" };
-            rhi::ShaderBundle bundle;
+            k3d::ShaderDesc desc = { k3d::EShFmt_Text, k3d::EShLang_GLSL, k3d::EShProfile_Modern, k3d::ES_Vertex, "main" };
+            k3d::ShaderBundle bundle;
             auto ret = mtlCompiler->Compile(vertexSource, desc, bundle);
-            K3D_ASSERT(ret == rhi::shc::E_Ok);
+            K3D_ASSERT(ret == k3d::shc::E_Ok);
                 
             // test shader serialize
             Os::File shBundle;

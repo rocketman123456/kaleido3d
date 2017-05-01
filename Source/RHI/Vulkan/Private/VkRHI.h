@@ -1,7 +1,6 @@
 #ifndef __VkRHI_h__
 #define __VkRHI_h__
 #pragma once
-#include "VkObjects.h"
 #include <Core/Os.h>
 #include <list>
 #include <tuple>
@@ -24,15 +23,10 @@ using PtrSemaphore = std::shared_ptr<Semaphore>;
 class Fence;
 using PtrFence = SharedPtr<Fence>;
 
-class CommandContext;
-using PtrContext = std::shared_ptr<CommandContext>;
-using PtrContextList = std::list<PtrContext>;
-
 class CommandContextPool;
 
 class SwapChain;
-using SwapChainRef = SharedPtr<SwapChain>;
-using PtrSwapChain = std::unique_ptr<SwapChain>;
+using SpSwapChain = SharedPtr<SwapChain>;
 
 class CommandQueue;
 using SpCmdQueue = SharedPtr<CommandQueue>;
@@ -46,10 +40,11 @@ class DescriptorSetLayout;
 
 class FrameBuffer;
 using SpFramebuffer = SharedPtr<FrameBuffer>;
+using WpFramebuffer = WeakPtr<FrameBuffer>;
 
 class RenderPass;
 using SpRenderpass = SharedPtr<RenderPass>;
-using UpRenderpass = std::unique_ptr<RenderPass>;
+using WpRenderpass = WeakPtr<RenderPass>;
 
 class Texture;
 using SpTexture = SharedPtr<Texture>;
@@ -72,11 +67,12 @@ using DescriptorSetLayoutRef = SharedPtr<DescriptorSetLayout>;
 class DescriptorSet;
 using DescriptorSetRef = SharedPtr<DescriptorSet>;
 
-class RenderViewport;
-using RenderViewportSp = SharedPtr<RenderViewport>;
+class Instance;
+using InstanceRef = SharedPtr<Instance>;
 
-typedef std::map<rhi::PipelineLayoutKey, rhi::PipelineLayoutRef>
-  MapPipelineLayout;
+class Gpu;
+using GpuRef = SharedPtr<Gpu>;
+
 typedef std::unordered_map<uint32, DescriptorSetLayoutRef>
   MapDescriptorSetLayout;
 typedef std::unordered_map<uint32, DescriptorAllocRef> MapDescriptorAlloc;
@@ -118,20 +114,247 @@ struct ResTrait<VkImage>
   static decltype(vkBindImageMemory)* BindMemory;
 };
 
+VKAPI_ATTR VkBool32 VKAPI_CALL
+DebugReportCallback(VkDebugReportFlagsEXT flags,
+  VkDebugReportObjectTypeEXT objectType,
+  uint64_t object,
+  size_t location,
+  int32_t messageCode,
+  const char* pLayerPrefix,
+  const char* pMessage,
+  void* pUserData);
+
 struct RHIRoot
 {
-  static void AddViewport(RenderViewportSp);
-  static RenderViewportSp GetViewport(int index);
-
 private:
-  static RenderViewportSp s_Vp;
-
   static void EnumLayersAndExts();
   friend class Device;
 };
 
+#ifdef VK_NO_PROTOTYPES
+#define __VK_DEVICE_PROC__(name) PFN_vk##name vk##name = NULL
+#endif
+
+class Gpu : public EnableSharedFromThis<Gpu>
+{
+public:
+  ~Gpu();
+
+  VkDevice CreateLogicDevice(bool enableValidation);
+  VkBool32 GetSupportedDepthFormat(VkFormat* depthFormat);
+
+  VkResult GetSurfaceSupportKHR(uint32_t queueFamilyIndex,
+    VkSurfaceKHR surface,
+    VkBool32* pSupported);
+  VkResult GetSurfaceCapabilitiesKHR(
+    VkSurfaceKHR surface,
+    VkSurfaceCapabilitiesKHR* pSurfaceCapabilities);
+  VkResult GetSurfaceFormatsKHR(VkSurfaceKHR surface,
+    uint32_t* pSurfaceFormatCount,
+    VkSurfaceFormatKHR* pSurfaceFormats);
+  VkResult GetSurfacePresentModesKHR(VkSurfaceKHR surface,
+    uint32_t* pPresentModeCount,
+    VkPresentModeKHR* pPresentModes);
+
+  void DestroyDevice();
+  void FreeCommandBuffers(VkCommandPool, uint32, VkCommandBuffer*);
+  VkResult CreateCommdPool(const VkCommandPoolCreateInfo* pCreateInfo,
+    const VkAllocationCallbacks* pAllocator,
+    VkCommandPool* pCommandPool);
+  VkResult AllocateCommandBuffers(
+    const VkCommandBufferAllocateInfo* pAllocateInfo,
+    VkCommandBuffer* pCommandBuffers);
+
+  InstanceRef GetInstance() const { return m_Inst; }
+
+#ifdef VK_NO_PROTOTYPES
+  __VK_DEVICE_PROC__(DestroyDevice);
+  __VK_DEVICE_PROC__(GetDeviceQueue);
+  __VK_DEVICE_PROC__(QueueSubmit);
+  __VK_DEVICE_PROC__(QueueWaitIdle);
+  __VK_DEVICE_PROC__(QueuePresentKHR);
+  __VK_DEVICE_PROC__(DeviceWaitIdle);
+  __VK_DEVICE_PROC__(AllocateMemory);
+  __VK_DEVICE_PROC__(FreeMemory);
+  __VK_DEVICE_PROC__(MapMemory);
+  __VK_DEVICE_PROC__(UnmapMemory);
+  __VK_DEVICE_PROC__(FlushMappedMemoryRanges);
+  __VK_DEVICE_PROC__(InvalidateMappedMemoryRanges);
+  __VK_DEVICE_PROC__(GetDeviceMemoryCommitment);
+  __VK_DEVICE_PROC__(BindBufferMemory);
+  __VK_DEVICE_PROC__(BindImageMemory);
+  __VK_DEVICE_PROC__(GetBufferMemoryRequirements);
+  __VK_DEVICE_PROC__(GetImageMemoryRequirements);
+  __VK_DEVICE_PROC__(GetImageSparseMemoryRequirements);
+  __VK_DEVICE_PROC__(QueueBindSparse);
+  __VK_DEVICE_PROC__(CreateFence);
+  __VK_DEVICE_PROC__(DestroyFence);
+  __VK_DEVICE_PROC__(ResetFences);
+  __VK_DEVICE_PROC__(GetFenceStatus);
+  __VK_DEVICE_PROC__(WaitForFences);
+  __VK_DEVICE_PROC__(CreateSemaphore);
+  __VK_DEVICE_PROC__(DestroySemaphore);
+  __VK_DEVICE_PROC__(CreateEvent);
+  __VK_DEVICE_PROC__(DestroyEvent);
+  __VK_DEVICE_PROC__(GetEventStatus);
+  __VK_DEVICE_PROC__(SetEvent);
+  __VK_DEVICE_PROC__(ResetEvent);
+  __VK_DEVICE_PROC__(CreateQueryPool);
+  __VK_DEVICE_PROC__(DestroyQueryPool);
+  __VK_DEVICE_PROC__(GetQueryPoolResults);
+  __VK_DEVICE_PROC__(CreateBuffer);
+  __VK_DEVICE_PROC__(DestroyBuffer);
+  __VK_DEVICE_PROC__(CreateBufferView);
+  __VK_DEVICE_PROC__(DestroyBufferView);
+  __VK_DEVICE_PROC__(CreateImage);
+  __VK_DEVICE_PROC__(DestroyImage);
+  __VK_DEVICE_PROC__(GetImageSubresourceLayout);
+  __VK_DEVICE_PROC__(CreateImageView);
+  __VK_DEVICE_PROC__(DestroyImageView);
+  __VK_DEVICE_PROC__(CreateShaderModule);
+  __VK_DEVICE_PROC__(DestroyShaderModule);
+  __VK_DEVICE_PROC__(CreatePipelineCache);
+  __VK_DEVICE_PROC__(DestroyPipelineCache);
+  __VK_DEVICE_PROC__(GetPipelineCacheData);
+  __VK_DEVICE_PROC__(MergePipelineCaches);
+  __VK_DEVICE_PROC__(CreateGraphicsPipelines);
+  __VK_DEVICE_PROC__(CreateComputePipelines);
+  __VK_DEVICE_PROC__(DestroyPipeline);
+  __VK_DEVICE_PROC__(CreatePipelineLayout);
+  __VK_DEVICE_PROC__(DestroyPipelineLayout);
+  __VK_DEVICE_PROC__(CreateSampler);
+  __VK_DEVICE_PROC__(DestroySampler);
+  __VK_DEVICE_PROC__(CreateDescriptorSetLayout);
+  __VK_DEVICE_PROC__(DestroyDescriptorSetLayout);
+  __VK_DEVICE_PROC__(CreateDescriptorPool);
+  __VK_DEVICE_PROC__(DestroyDescriptorPool);
+  __VK_DEVICE_PROC__(ResetDescriptorPool);
+  __VK_DEVICE_PROC__(AllocateDescriptorSets);
+  __VK_DEVICE_PROC__(FreeDescriptorSets);
+  __VK_DEVICE_PROC__(UpdateDescriptorSets);
+  __VK_DEVICE_PROC__(CreateFramebuffer);
+  __VK_DEVICE_PROC__(DestroyFramebuffer);
+  __VK_DEVICE_PROC__(CreateRenderPass);
+  __VK_DEVICE_PROC__(DestroyRenderPass);
+  __VK_DEVICE_PROC__(GetRenderAreaGranularity);
+  __VK_DEVICE_PROC__(CreateCommandPool);
+  __VK_DEVICE_PROC__(DestroyCommandPool);
+  __VK_DEVICE_PROC__(ResetCommandPool);
+  __VK_DEVICE_PROC__(AllocateCommandBuffers);
+  __VK_DEVICE_PROC__(FreeCommandBuffers);
+  __VK_DEVICE_PROC__(BeginCommandBuffer);
+  __VK_DEVICE_PROC__(EndCommandBuffer);
+  __VK_DEVICE_PROC__(ResetCommandBuffer);
+  __VK_DEVICE_PROC__(CmdBindPipeline);
+  __VK_DEVICE_PROC__(CmdSetViewport);
+  __VK_DEVICE_PROC__(CmdSetScissor);
+  __VK_DEVICE_PROC__(CmdSetLineWidth);
+  __VK_DEVICE_PROC__(CmdSetDepthBias);
+  __VK_DEVICE_PROC__(CmdSetBlendConstants);
+  __VK_DEVICE_PROC__(CmdSetDepthBounds);
+  __VK_DEVICE_PROC__(CmdSetStencilCompareMask);
+  __VK_DEVICE_PROC__(CmdSetStencilWriteMask);
+  __VK_DEVICE_PROC__(CmdSetStencilReference);
+  __VK_DEVICE_PROC__(CmdBindDescriptorSets);
+  __VK_DEVICE_PROC__(CmdBindIndexBuffer);
+  __VK_DEVICE_PROC__(CmdBindVertexBuffers);
+  __VK_DEVICE_PROC__(CmdDraw);
+  __VK_DEVICE_PROC__(CmdDrawIndexed);
+  __VK_DEVICE_PROC__(CmdDrawIndirect);
+  __VK_DEVICE_PROC__(CmdDrawIndexedIndirect);
+  __VK_DEVICE_PROC__(CmdDispatch);
+  __VK_DEVICE_PROC__(CmdDispatchIndirect);
+  __VK_DEVICE_PROC__(CmdCopyBuffer);
+  __VK_DEVICE_PROC__(CmdCopyImage);
+  __VK_DEVICE_PROC__(CmdBlitImage);
+  __VK_DEVICE_PROC__(CmdCopyBufferToImage);
+  __VK_DEVICE_PROC__(CmdCopyImageToBuffer);
+  __VK_DEVICE_PROC__(CmdUpdateBuffer);
+  __VK_DEVICE_PROC__(CmdFillBuffer);
+  __VK_DEVICE_PROC__(CmdClearColorImage);
+  __VK_DEVICE_PROC__(CmdClearDepthStencilImage);
+  __VK_DEVICE_PROC__(CmdClearAttachments);
+  __VK_DEVICE_PROC__(CmdResolveImage);
+  __VK_DEVICE_PROC__(CmdSetEvent);
+  __VK_DEVICE_PROC__(CmdResetEvent);
+  __VK_DEVICE_PROC__(CmdWaitEvents);
+  __VK_DEVICE_PROC__(CmdPipelineBarrier);
+  __VK_DEVICE_PROC__(CmdBeginQuery);
+  __VK_DEVICE_PROC__(CmdEndQuery);
+  __VK_DEVICE_PROC__(CmdResetQueryPool);
+  __VK_DEVICE_PROC__(CmdWriteTimestamp);
+  __VK_DEVICE_PROC__(CmdCopyQueryPoolResults);
+  __VK_DEVICE_PROC__(CmdPushConstants);
+  __VK_DEVICE_PROC__(CmdBeginRenderPass);
+  __VK_DEVICE_PROC__(CmdNextSubpass);
+  __VK_DEVICE_PROC__(CmdEndRenderPass);
+  __VK_DEVICE_PROC__(CmdExecuteCommands);
+  __VK_DEVICE_PROC__(AcquireNextImageKHR);
+  __VK_DEVICE_PROC__(CreateSwapchainKHR);
+  __VK_DEVICE_PROC__(DestroySwapchainKHR);
+  __VK_DEVICE_PROC__(GetSwapchainImagesKHR);
+
+  PFN_vkDestroyDevice fpDestroyDevice = NULL;
+  PFN_vkFreeCommandBuffers fpFreeCommandBuffers = NULL;
+  PFN_vkCreateCommandPool fpCreateCommandPool = NULL;
+  PFN_vkAllocateCommandBuffers fpAllocateCommandBuffers = NULL;
+#endif
+
+  VkDevice m_LogicalDevice;
+
+private:
+  friend class Instance;
+  friend class Device;
+  friend class DeviceAdapter;
+
+  Gpu(VkPhysicalDevice const&, InstanceRef const& inst);
+
+  void QuerySupportQueues();
+  void LoadDeviceProcs();
+
+  InstanceRef m_Inst;
+  VkPhysicalDevice m_PhysicalGpu;
+  VkPhysicalDeviceProperties m_Prop;
+  VkPhysicalDeviceFeatures m_Features;
+  VkPhysicalDeviceMemoryProperties m_MemProp;
+  uint32 m_GraphicsQueueIndex = 0;
+  uint32 m_ComputeQueueIndex = 0;
+  uint32 m_CopyQueueIndex = 0;
+  DynArray<VkQueueFamilyProperties> m_QueueProps;
+};
+
+class CommandBufferManager
+{
+public:
+  CommandBufferManager(VkDevice pDevice,
+    VkCommandBufferLevel bufferLevel,
+    unsigned graphicsQueueIndex);
+  ~CommandBufferManager();
+  void Destroy();
+  VkCommandBuffer RequestCommandBuffer();
+  void BeginFrame();
+
+private:
+  VkDevice m_Device = VK_NULL_HANDLE;
+  VkCommandPool m_Pool = VK_NULL_HANDLE;
+  DynArray<VkCommandBuffer> m_Buffers;
+  VkCommandBufferLevel m_CommandBufferLevel;
+  uint32 m_Count = 0;
+};
+
+using CmdBufManagerRef = SharedPtr<CommandBufferManager>;
+
+using MapFramebuffer = std::unordered_map<uint64, SpFramebuffer>;
+using MapRenderpass = std::unordered_map<uint64, SpRenderpass>;
+class DeviceObjectCache
+{
+public:
+  static MapFramebuffer s_Framebuffer;
+  static MapRenderpass s_RenderPass;
+};
+
 class Device
-  : public rhi::IDevice
+  : public k3d::IDevice
   , public k3d::EnableSharedFromThis<Device>
 {
 public:
@@ -140,47 +363,40 @@ public:
   Device();
   ~Device() override;
   void Release() override;
-#if 0
-  rhi::CommandContextRef NewCommandContext(rhi::ECommandType) override;
-#endif
-  rhi::GpuResourceRef NewGpuResource(rhi::ResourceDesc const&) override;
 
-  rhi::ShaderResourceViewRef NewShaderResourceView(
-    rhi::GpuResourceRef,
-    rhi::ResourceViewDesc const&) override;
+  k3d::GpuResourceRef NewGpuResource(k3d::ResourceDesc const&) override;
 
-  rhi::SamplerRef NewSampler(const rhi::SamplerState&) override;
+  k3d::ShaderResourceViewRef NewShaderResourceView(
+    k3d::GpuResourceRef,
+    k3d::ResourceViewDesc const&) override;
 
-  rhi::PipelineLayoutRef NewPipelineLayout(
-    rhi::PipelineLayoutDesc const& table) override;
+  k3d::SamplerRef NewSampler(const k3d::SamplerState&) override;
 
-  rhi::PipelineStateRef CreateRenderPipelineState(
-    rhi::RenderPipelineStateDesc const&,
-    rhi::PipelineLayoutRef) override;
+  k3d::PipelineLayoutRef NewPipelineLayout(
+    k3d::PipelineLayoutDesc const& table) override;
 
-  rhi::PipelineStateRef CreateComputePipelineState(
-    rhi::ComputePipelineStateDesc const&,
-    rhi::PipelineLayoutRef) override;
+  k3d::RenderPassRef CreateRenderPass(k3d::RenderPassDesc const&) override;
 
-  rhi::SyncFenceRef CreateFence() override;
+  k3d::PipelineStateRef CreateRenderPipelineState(
+    k3d::RenderPipelineStateDesc const&,
+    k3d::PipelineLayoutRef,
+    k3d::RenderPassRef) override;
 
-  rhi::CommandQueueRef CreateCommandQueue(rhi::ECommandType const&) override;
-#if 0
-  rhi::RenderViewportRef NewRenderViewport(void* winHandle,
-                                           rhi::RenderViewportDesc&) override;
-#endif
-  rhi::RenderTargetRef NewRenderTarget(
-    rhi::RenderTargetLayout const& layout) override;
+  k3d::PipelineStateRef CreateComputePipelineState(
+    k3d::ComputePipelineStateDesc const&,
+    k3d::PipelineLayoutRef) override;
+
+  k3d::SyncFenceRef CreateFence() override;
+
+  k3d::CommandQueueRef CreateCommandQueue(k3d::ECommandType const&) override;
 
   void WaitIdle() override { vkDeviceWaitIdle(m_Device); }
 
-  void QueryTextureSubResourceLayout(rhi::TextureRef,
-                                     rhi::TextureResourceSpec const& spec,
-                                     rhi::SubResourceLayout*) override;
+  void QueryTextureSubResourceLayout(k3d::TextureRef,
+                                     k3d::TextureResourceSpec const& spec,
+                                     k3d::SubResourceLayout*) override;
 
   VkDevice const& GetRawDevice() const { return m_Device; }
-  // PtrResManager const &		GetMemoryManager() const { return
-  // m_ResourceManager; }
 
   PtrCmdAlloc NewCommandAllocator(bool transient);
   bool FindMemoryType(uint32 typeBits,
@@ -190,19 +406,17 @@ public:
 
   uint32 GetQueueCount() const { return m_Gpu->m_QueueProps.Count(); }
 
-  SpRenderpass const& GetTopPass() const { return m_PendingPass.back(); }
-
-  void PushRenderPass(SpRenderpass renderPass)
-  {
-    m_PendingPass.push_back(renderPass);
-  }
-
   DescriptorAllocRef NewDescriptorAllocator(uint32 maxSets,
                                             BindingArray const& bindings);
   DescriptorSetLayoutRef NewDescriptorSetLayout(BindingArray const& bindings);
 
   uint64 GetMaxAllocationCount();
-  VkShaderModule CreateShaderModule(rhi::ShaderBundle const& Bundle);
+  VkShaderModule CreateShaderModule(k3d::ShaderBundle const& Bundle);
+  VkQueue GetImmQueue() const { return m_ImmediateQueue; }
+  VkCommandBuffer AllocateImmediateCommand();
+
+  SpRenderpass GetOrCreateRenderPass(const k3d::RenderPassDesc& desc);
+  SpFramebuffer GetOrCreateFramebuffer(const k3d::RenderPassDesc& desc);
 
   friend class DeviceChild;
 
@@ -215,22 +429,19 @@ protected:
 
   friend class Instance;
   friend class SwapChain;
+  template<class T1, class T2> 
+  friend class TVkRHIObjectBase;
 
 private:
   CmdBufManagerRef m_CmdBufManager;
-  // PtrResManager
-  // m_ResourceManager;  std::unique_ptr<CommandContextPool>
-  // m_ContextPool;
-  std::vector<SpRenderpass> m_PendingPass;
-
-  // MapPipelineLayout
-  // m_CachedPipelineLayout;  MapDescriptorAlloc
-  // m_CachedDescriptorPool;  MapDescriptorSetLayout
-  // m_CachedDescriptorSetLayout;
 
 private:
   VkPhysicalDeviceMemoryProperties m_MemoryProperties = {};
   VkDevice m_Device = VK_NULL_HANDLE;
+
+  VkQueue m_ImmediateQueue = VK_NULL_HANDLE;
+  VkCommandPool m_ImmediateCmdPool = VK_NULL_HANDLE;
+
   GpuRef m_Gpu;
 };
 
@@ -239,7 +450,7 @@ private:
 
 class Instance
   : public EnableSharedFromThis<Instance>
-  , public rhi::IFactory
+  , public k3d::IFactory
 {
 public:
   Instance(const ::k3d::String& engineName,
@@ -249,11 +460,11 @@ public:
 
   void Release() override;
   // IFactory::EnumDevices
-  void EnumDevices(DynArray<rhi::DeviceRef>& Devices) override;
+  void EnumDevices(DynArray<k3d::DeviceRef>& Devices) override;
   // IFactory::CreateSwapChain
-  rhi::SwapChainRef CreateSwapchain(rhi::CommandQueueRef pCommandQueue,
+  k3d::SwapChainRef CreateSwapchain(k3d::CommandQueueRef pCommandQueue,
                                     void* nPtr,
-                                    rhi::SwapChainDesc&) override;
+                                    k3d::SwapChainDesc&) override;
 
   void SetupDebugging(VkDebugReportFlagsEXT flags,
                       PFN_vkDebugReportCallbackEXT callBack);
@@ -310,6 +521,8 @@ private:
   VkInstance m_Instance;
   VkDebugReportCallbackEXT m_DebugMsgCallback;
 
+  PFN_vkCreateDebugReportCallbackEXT CreateDebugReport = NULL;
+  PFN_vkDestroyDebugReportCallbackEXT DestroyDebugReport = NULL;
 #ifdef VK_NO_PROTOTYPES
 
   PFN_vkGetPhysicalDeviceSurfaceSupportKHR fpGetPhysicalDeviceSurfaceSupportKHR;
@@ -386,6 +599,7 @@ public:
 
   TVkObj NativeHandle() const { return m_NativeObj; }
   VkDevice NativeDevice() const { return m_Device->GetRawDevice(); }
+  VkCommandPool ImmCmdPool() const { return m_Device->m_ImmediateCmdPool; }
 
 protected:
   SharedPtr<Device> m_Device;
@@ -401,10 +615,22 @@ protected:
   explicit className(Device::Ptr ptr = nullptr);
 
 /**
+* If VK_FENCE_CREATE_SIGNALED_BIT is set then the fence is created already
+* signaled, otherwise, the fence is created in an unsignaled state.
+*/
+class FenceCreateInfo : public VkFenceCreateInfo
+{
+public:
+  static VkFenceCreateInfo Create()
+  {
+    return { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, 0 };
+  }
+};
+/**
  * Fences are signaled by the system when work invoked by vkQueueSubmit
  * completes.
  */
-class Fence : public TVkRHIObjectBase<VkFence, rhi::ISyncFence>
+class Fence : public TVkRHIObjectBase<VkFence, k3d::ISyncFence>
 {
 public:
   Fence(Device::Ptr pDevice,
@@ -445,23 +671,23 @@ private:
   friend class CommandContext;
 };
 
-class Sampler : public TVkRHIObjectBase<VkSampler, rhi::ISampler>
+class Sampler : public TVkRHIObjectBase<VkSampler, k3d::ISampler>
 {
 public:
-  explicit Sampler(Device::Ptr pDevice, rhi::SamplerState const& sampleDesc);
+  explicit Sampler(Device::Ptr pDevice, k3d::SamplerState const& sampleDesc);
   ~Sampler() override;
-  rhi::SamplerState GetSamplerDesc() const;
+  k3d::SamplerState GetSamplerDesc() const;
 
 protected:
   VkSamplerCreateInfo m_SamplerCreateInfo = {};
-  rhi::SamplerState m_SamplerState;
+  k3d::SamplerState m_SamplerState;
 };
 
 /**
  * @param binding
  */
 VkDescriptorSetLayoutBinding
-RHIBinding2VkBinding(rhi::shc::Binding const& binding);
+RHIBinding2VkBinding(k3d::shc::Binding const& binding);
 /**
  * Vulkan has DescriptorPool, DescriptorSet, DescriptorSetLayout and
  * PipelineLayout DescriptorSet is allocated from DescriptorPool with
@@ -520,7 +746,7 @@ private:
 
 class DescriptorSet
   : public DeviceChild
-  , public rhi::IDescriptor
+  , public k3d::IDescriptor
 {
 public:
   static DescriptorSet* CreateDescSet(DescriptorAllocRef descriptorPool,
@@ -528,8 +754,8 @@ public:
                                       BindingArray const& bindings,
                                       Device::Ptr pDevice);
   virtual ~DescriptorSet();
-  void Update(uint32 bindSet, rhi::SamplerRef) override;
-  void Update(uint32 bindSet, rhi::GpuResourceRef) override;
+  void Update(uint32 bindSet, k3d::SamplerRef) override;
+  void Update(uint32 bindSet, k3d::GpuResourceRef) override;
   uint32 GetSlotNum() const override;
   VkDescriptorSet GetNativeHandle() const { return m_DescriptorSet; }
 
@@ -546,50 +772,6 @@ private:
 
   void Initialize(VkDescriptorSetLayout layout, BindingArray const& bindings);
   void Destroy();
-};
-
-class Resource
-  : virtual public rhi::IGpuResource
-  , public DeviceChild
-{
-public:
-  typedef void* Ptr;
-  typedef void const* CPtr;
-
-  explicit Resource(Device::Ptr pDevice)
-    : DeviceChild(pDevice)
-    , m_HostMem(nullptr)
-    , m_DeviceMem{}
-    , m_Desc{}
-  {
-  }
-  Resource(Device::Ptr pDevice, rhi::ResourceDesc const& desc)
-    : DeviceChild(pDevice)
-    , m_HostMem(nullptr)
-    , m_DeviceMem{}
-    , m_Desc(desc)
-  {
-  }
-  virtual ~Resource();
-
-  Resource::CPtr GetHostMemory(uint64 OffSet) const { return m_HostMem; }
-  VkDeviceMemory GetDeviceMemory() const { return m_DeviceMem; }
-
-  Resource::Ptr Map(uint64 offset, uint64 size) override;
-  void UnMap() override { vkUnmapMemory(GetRawDevice(), m_DeviceMem); }
-  uint64 GetSize() const override { return m_Size; }
-  rhi::ResourceDesc GetDesc() const override { return m_Desc; }
-
-protected:
-  VkMemoryAllocateInfo m_MemAllocInfo;
-  VkDeviceMemory m_DeviceMem;
-  Resource::Ptr m_HostMem;
-
-  VkDeviceSize m_Size = 0;
-  VkDeviceSize m_AllocationSize = 0;
-  VkDeviceSize m_AllocationOffset = 0;
-
-  rhi::ResourceDesc m_Desc;
 };
 
 template<class TVkResObj, class TRHIResObj>
@@ -612,7 +794,7 @@ public:
   {
   }
 
-  TResource(VkDeviceRef const& refDevice, rhi::ResourceDesc const& desc)
+  TResource(VkDeviceRef const& refDevice, k3d::ResourceDesc const& desc)
     : TVkRHIObjectBase<TVkResObj, TRHIResObj>(refDevice)
     , m_MemAllocInfo{}
     , m_HostMemAddr(nullptr)
@@ -654,14 +836,16 @@ public:
   void UnMap() override { vkUnmapMemory(NativeDevice(), m_DeviceMem); }
 
   uint64 GetLocation() const override { return (uint64)m_NativeObj; }
-  uint64 GetSize() const override { return m_MemAllocInfo.allocationSize; }
-  rhi::ResourceDesc GetDesc() const override { return m_ResDesc; }
+  virtual uint64 GetSize() const override { return m_MemAllocInfo.allocationSize; }
+  k3d::ResourceDesc GetDesc() const override { return m_ResDesc; }
 
-protected:
   typedef typename ResTrait<TVkResObj>::CreateInfo CreateInfo;
   typedef typename ResTrait<TVkResObj>::View ResourceView;
   typedef typename ResTrait<TVkResObj>::DescriptorInfo ResourceDescriptorInfo;
   typedef typename ResTrait<TVkResObj>::UsageFlags ResourceUsageFlags;
+  ResourceView NativeView() const { return m_ResView; }
+
+protected:
 
   VkMemoryAllocateInfo m_MemAllocInfo;
   VkMemoryRequirements m_MemReq;
@@ -671,7 +855,7 @@ protected:
   ResourceView m_ResView;
   ResourceUsageFlags m_ResUsageFlags = 0;
   ResourceDescriptorInfo m_ResDescInfo{};
-  rhi::ResourceDesc m_ResDesc;
+  k3d::ResourceDesc m_ResDesc;
   bool m_SelfOwned = true;
 
 protected:
@@ -695,7 +879,7 @@ protected:
   }
 };
 
-class Buffer : public TResource<VkBuffer, rhi::IGpuResource>
+class Buffer : public TResource<VkBuffer, k3d::IGpuResource>
 {
 public:
   typedef Buffer* Ptr;
@@ -703,13 +887,13 @@ public:
     : ThisResourceType(pDevice)
   {
   }
-  Buffer(Device::Ptr pDevice, rhi::ResourceDesc const& desc);
+  Buffer(Device::Ptr pDevice, k3d::ResourceDesc const& desc);
   virtual ~Buffer();
-
+  uint64 GetSize() const override { return m_ResDesc.Size; }
   void Create(size_t size);
 };
 
-class Texture : public TResource<VkImage, rhi::ITexture>
+class Texture : public TResource<VkImage, k3d::ITexture>
 {
 public:
   typedef ::k3d::SharedPtr<Texture> TextureRef;
@@ -718,32 +902,27 @@ public:
     : ThisResourceType(pDevice)
   {
   }
-  Texture(Device::Ptr pDevice, rhi::ResourceDesc const&);
-  Texture(VkImage image,
-          VkImageView imageView,
-          VkImageViewCreateInfo info,
+  Texture(Device::Ptr pDevice, k3d::ResourceDesc const&);
+  // For Swapchain
+  Texture(k3d::ResourceDesc const& Desc,
+          VkImage image,
           Device::Ptr pDevice,
           bool selfOwnShip = true);
+  
   ~Texture() override;
 
-  static TextureRef CreateFromSwapChain(VkImage image,
-                                        VkImageView view,
-                                        VkImageViewCreateInfo info,
-                                        Device::Ptr pDevice);
-
-  const VkImageViewCreateInfo& GetViewInfo() const { return m_ImageViewInfo; }
-  const VkImageView& GetView() const { return m_ResView; }
-  const VkImage& Get() const { return m_NativeObj; }
+  void BindSampler(k3d::SamplerRef sampler) override;
+  k3d::SamplerCRef GetSampler() const override;
+  k3d::ShaderResourceViewRef GetResourceView() const override { return m_SRV; }
+  void SetResourceView(k3d::ShaderResourceViewRef srv) override { m_SRV = srv; }
+  k3d::EResourceState GetState() const override { return m_UsageState; }
+  
   VkImageLayout GetImageLayout() const { return m_ImageLayout; }
   VkImageSubresourceRange GetSubResourceRange() const { return m_SubResRange; }
 
-  void BindSampler(rhi::SamplerRef sampler) override;
-  rhi::SamplerCRef GetSampler() const override;
-  rhi::ShaderResourceViewRef GetResourceView() const override { return m_SRV; }
-  void SetResourceView(rhi::ShaderResourceViewRef srv) override { m_SRV = srv; }
-  rhi::EResourceState GetState() const override { return m_UsageState; }
-
   void CreateResourceView();
+  void CreateViewForSwapchainImage();
+
   friend class SwapChain;
   friend class CommandBuffer;
   friend class CommandContext;
@@ -752,24 +931,29 @@ private:
   /**
    * Create texture for Render
    */
-  void CreateRenderTexture(rhi::TextureDesc const& desc);
-  void CreateDepthStencilTexture(rhi::TextureDesc const& desc);
+  void CreateRenderTexture(k3d::TextureDesc const& desc);
+  void CreateDepthStencilTexture(k3d::TextureDesc const& desc);
   /**
    * Create texture for Sampler
    */
-  void CreateSampledTexture(rhi::TextureDesc const& desc);
+  void CreateSampledTexture(k3d::TextureDesc const& desc);
 
 private:
   ::k3d::SharedPtr<Sampler> m_ImageSampler;
   VkImageViewCreateInfo m_ImageViewInfo = {};
-  rhi::ShaderResourceViewRef m_SRV;
-  ImageInfo m_ImageInfo;
-  rhi::EResourceState m_UsageState = rhi::ERS_Unknown;
+  k3d::ShaderResourceViewRef m_SRV;
+  VkImageCreateInfo m_ImageInfo = {};
+  k3d::EResourceState m_UsageState = k3d::ERS_Unknown;
   VkImageLayout m_ImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VkImageMemoryBarrier m_Barrier;
 
   VkSubresourceLayout m_SubResourceLayout = {};
   VkImageSubresourceRange m_SubResRange = {};
+};
+
+class RenderTexture : public Texture
+{
+
 };
 
 class ResourceManager : public DeviceChild
@@ -868,43 +1052,28 @@ private:
   PoolManager<VkImage> m_ImageAllocations;
 };
 
-class CommandContextPool : public DeviceChild
-{
-public:
-  CommandContextPool(Device::Ptr pDevice);
-  ~CommandContextPool() override;
-
-  rhi::CommandContextRef RequestContext(rhi::ECommandType type);
-
-  PtrCmdAlloc RequestCommandAllocator();
-
-private:
-  using Mutex = Os::Mutex;
-  Mutex m_PoolMutex;
-  Mutex m_ContextMutex;
-  std::unordered_map<uint32, PtrCmdAlloc> m_AllocatorPool;
-  std::unordered_map<uint32, std::list<CommandContext*>> m_ContextList;
-};
 /**
  * TODO: Need a Renderpass manager to cache all renderpasses
+ * [framebuffer, attachments, depth, stencil
  */
 class RenderTarget
   : public DeviceChild
-  , public rhi::IRenderTarget
+  , public k3d::IRenderTarget
 {
 public:
-  RenderTarget(Device::Ptr pDevice, rhi::RenderTargetLayout const& Layout);
   RenderTarget(Device::Ptr pDevice,
                Texture::TextureRef texture,
                SpFramebuffer framebuffer,
                VkRenderPass renderpass);
   ~RenderTarget() override;
 
+//  static void CreateFromSwapchain();
+
   VkFramebuffer GetFramebuffer() const;
   VkRenderPass GetRenderpass() const;
   Texture::TextureRef GetTexture() const;
   VkRect2D GetRenderArea() const;
-  rhi::GpuResourceRef GetBackBuffer() override;
+  k3d::GpuResourceRef GetBackBuffer() override;
   PtrSemaphore GetSemaphore() { return m_AcquireSemaphore; }
 
   void SetClearColor(kMath::Vec4f clrColor) override
@@ -922,154 +1091,27 @@ private:
   friend class CommandContext;
 
   VkClearValue m_ClearValues[2] = { {}, { 1.0f, 0 } };
-
-  SpFramebuffer m_Framebuffer;
+  
+  VkFramebuffer m_Framebuffer;
   VkRenderPass m_Renderpass;
-  Texture::TextureRef m_RenderTexture;
+
   PtrSemaphore m_AcquireSemaphore;
 };
 
-#if 0
-/**
- * Need CommandBufferManager to issue Cmds
- */
-class CommandContext
-  : public rhi::ICommandContext
-  , public DeviceChild
-{
-public:
-  explicit CommandContext(Device::Ptr pDevice);
-  CommandContext(Device::Ptr pDevice,
-                 VkCommandBuffer cmdBuf,
-                 VkCommandPool pool,
-                 rhi::ECommandType type = rhi::ECMD_Graphics);
-  virtual ~CommandContext();
-
-  void Detach(rhi::IDevice*) override;
-  void CopyBuffer(rhi::IGpuResource& Dest,
-                  rhi::IGpuResource& Src,
-                  rhi::CopyBufferRegion const& Region) override;
-  void CopyTexture(const rhi::TextureCopyLocation& Dest,
-                   const rhi::TextureCopyLocation& Src);
-  /**
-   * @brief	submit command buffer to queue and wait for scheduling.
-   * @param	Wait	true to wait.
-   */
-  void Execute(bool Wait) override;
-  void Reset() override;
-
-  void SubmitAndWait(PtrSemaphore wait, PtrSemaphore signal, PtrFence fence);
-
-  void Begin() override;
-  void End() override;
-
-  void BeginRendering() override;
-  void EndRendering() override;
-
-  void PresentInViewport(rhi::RenderViewportRef) override;
-
-  void BindDescriptorSets(VkPipelineBindPoint pipelineBindPoint,
-                          VkPipelineLayout layout,
-                          uint32 firstSet,
-                          uint32 descriptorSetCount,
-                          const VkDescriptorSet* pDescriptorSets,
-                          uint32 dynamicOffsetCount,
-                          const uint32* pDynamicOffsets);
-  void BindDescriptorSet(VkPipelineBindPoint pipelineBindPoint,
-                         VkPipelineLayout layout,
-                         const VkDescriptorSet& pDescriptorSets);
-  void ClearColorImage(VkImage image,
-                       VkImageLayout imageLayout,
-                       const VkClearColorValue* pColor,
-                       uint32 rangeCount,
-                       const VkImageSubresourceRange* pRanges);
-
-  void ClearColorImage(SpTexture colorBuffer,
-                       const VkClearColorValue* pColor,
-                       VkImageLayout imageLayout);
-
-  void ClearDepthStencilImage(VkImage image,
-                              VkImageLayout imageLayout,
-                              const VkClearDepthStencilValue* pDepthStencil,
-                              uint32 rangeCount,
-                              const VkImageSubresourceRange* pRanges);
-  void ClearAttachments(uint32 attachmentCount,
-                        const VkClearAttachment* pAttachments,
-                        uint32 rectCount,
-                        const VkClearRect* pRects);
-  void PipelineBarrier(VkPipelineStageFlags srcStageMask,
-                       VkPipelineStageFlags dstStageMask,
-                       VkDependencyFlags dependencyFlags,
-                       uint32 memoryBarrierCount,
-                       const VkMemoryBarrier* pMemoryBarriers,
-                       uint32 bufferMemoryBarrierCount,
-                       const VkBufferMemoryBarrier* pBufferMemoryBarriers,
-                       uint32 imageMemoryBarrierCount,
-                       const VkImageMemoryBarrier* pImageMemoryBarriers);
-  void PipelineBarrierBufferMemory(const BufferMemoryBarrierParams& params);
-  void PipelineBarrierImageMemory(const ImageMemoryBarrierParams& params);
-  void PushConstants(VkPipelineLayout layout,
-                     VkShaderStageFlags stageFlags,
-                     uint32 offset,
-                     uint32 size,
-                     const void* pValues);
-  void BeginRenderPass(const VkRenderPassBeginInfo* pRenderPassBegin,
-                       VkSubpassContents contents);
-  void SetScissorRects(uint32 count, VkRect2D* pRects);
-  /**
-   *	@param contents
-   *VK_SUBPASS_CONTENTS_INLINE,VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS
-   */
-  void NextSubpass(VkSubpassContents contents);
-  void EndRenderPass();
-
-  void SetRenderTarget(rhi::RenderTargetRef rt) override;
-  void ClearColorBuffer(rhi::GpuResourceRef, kMath::Vec4f const&) override;
-  void SetViewport(const rhi::ViewportDesc&) override;
-  void SetScissorRects(uint32, const rhi::Rect*) override;
-  void SetIndexBuffer(const rhi::IndexBufferView& IBView) override;
-  void SetVertexBuffer(uint32 Slot,
-                       const rhi::VertexBufferView& VBView) override;
-  void SetPipelineState(uint32 hashCode, rhi::PipelineStateRef const&) override;
-  void SetPipelineLayout(rhi::PipelineLayoutRef pRHIPipelineLayout) override;
-  void SetPrimitiveType(rhi::EPrimitiveType) override;
-  void DrawInstanced(rhi::DrawInstancedParam) override;
-  void DrawIndexedInstanced(rhi::DrawIndexedInstancedParam) override;
-  void Dispatch(uint32 X, uint32 Y, uint32 Z) override;
-  void TransitionResourceBarrier(
-    rhi::GpuResourceRef resource,
-    /* rhi::EPipelineStage stage,*/ rhi::EResourceState dstState) override;
-  friend class CommandContextPool;
-
-  void ExecuteBundle(rhi::ICommandContext*) override;
-
-protected:
-  VkCommandBuffer m_CommandBuffer;
-  // VkCommandPool			m_CommandPool;
-  VkRenderPass m_RenderPass;
-  bool m_IsRenderPassActive = false;
-  RenderTarget* m_CurrentRenderTarget = nullptr;
-  rhi::ECommandType m_CmdType = rhi::ECMD_Graphics;
-
-private:
-  void InitCommandBufferPool();
-};
-#endif
-
 class CommandQueue
-  : public TVkRHIObjectBase<VkQueue, rhi::ICommandQueue>
+  : public TVkRHIObjectBase<VkQueue, k3d::ICommandQueue>
   , public EnableSharedFromThis<CommandQueue>
 {
 public:
-  using This = TVkRHIObjectBase<VkQueue, rhi::ICommandQueue>;
+  using This = TVkRHIObjectBase<VkQueue, k3d::ICommandQueue>;
   CommandQueue(Device::Ptr pDevice,
                VkQueueFlags queueTypes,
                uint32 queueFamilyIndex,
                uint32 queueIndex);
   virtual ~CommandQueue();
 
-  rhi::CommandBufferRef ObtainCommandBuffer(
-    rhi::ECommandUsageType const&) override;
+  k3d::CommandBufferRef ObtainCommandBuffer(
+    k3d::ECommandUsageType const&) override;
 
   void Submit(const std::vector<VkCommandBuffer>& cmdBufs,
               const std::vector<VkSemaphore>& waitSemaphores,
@@ -1079,7 +1121,7 @@ public:
 
   VkResult Submit(const std::vector<VkSubmitInfo>& submits, VkFence fence);
 
-  void Present(SwapChainRef& pSwapChain);
+  void Present(SpSwapChain& pSwapChain);
 
   void WaitIdle();
 
@@ -1099,39 +1141,37 @@ private:
 };
 
 class CommandBuffer
-  : public TVkRHIObjectBase<VkCommandBuffer, rhi::ICommandBuffer>
+  : public TVkRHIObjectBase<VkCommandBuffer, k3d::ICommandBuffer>
   , public EnableSharedFromThis<CommandBuffer>
 {
 public:
-  using This = TVkRHIObjectBase<VkCommandBuffer, rhi::ICommandBuffer>;
+  using This = TVkRHIObjectBase<VkCommandBuffer, k3d::ICommandBuffer>;
 
   void Release() override;
 
-  void Commit() override;
-  void Present(rhi::SwapChainRef pSwapChain, rhi::SyncFenceRef pFence) override;
+  void Commit(SyncFenceRef pFence) override;
+  void Present(k3d::SwapChainRef pSwapChain, k3d::SyncFenceRef pFence) override;
 
   void Reset() override;
-  rhi::RenderCommandEncoderRef RenderCommandEncoder(
-    rhi::RenderTargetRef const&,
-    rhi::RenderPipelineStateRef const&) override;
-  rhi::ComputeCommandEncoderRef ComputeCommandEncoder(
-    rhi::ComputePipelineStateRef const&) override;
-  rhi::ParallelRenderCommandEncoderRef ParallelRenderCommandEncoder(
-    rhi::RenderTargetRef const&,
-    rhi::RenderPipelineStateRef const&) override;
-  void CopyTexture(const rhi::TextureCopyLocation& Dest,
-                   const rhi::TextureCopyLocation& Src) override;
-  void CopyBuffer(rhi::GpuResourceRef Dest,
-                  rhi::GpuResourceRef Src,
-                  rhi::CopyBufferRegion const& Region) override;
-  void Transition(rhi::GpuResourceRef pResource,
-                  rhi::EResourceState const&
-                    State /*, rhi::EPipelineStage const& Stage*/) override;
+  k3d::RenderCommandEncoderRef RenderCommandEncoder(
+    RenderPassDesc const&) override;
+  k3d::ComputeCommandEncoderRef ComputeCommandEncoder(
+    k3d::ComputePipelineStateRef) override;
+  k3d::ParallelRenderCommandEncoderRef ParallelRenderCommandEncoder(
+    RenderPassDesc const&) override;
+  void CopyTexture(const k3d::TextureCopyLocation& Dest,
+                   const k3d::TextureCopyLocation& Src) override;
+  void CopyBuffer(k3d::GpuResourceRef Dest,
+                  k3d::GpuResourceRef Src,
+                  k3d::CopyBufferRegion const& Region) override;
+  void Transition(k3d::GpuResourceRef pResource,
+                  k3d::EResourceState const&
+                    State /*, k3d::EPipelineStage const& Stage*/) override;
 
   SpCmdQueue OwningQueue() { return m_OwningQueue; }
 
   friend class CommandQueue;
-  template <typename T>
+  template<typename T>
   friend class CommandEncoder;
 
 protected:
@@ -1142,10 +1182,10 @@ protected:
 
   bool m_Ended;
   SpCmdQueue m_OwningQueue;
-  rhi::SwapChainRef m_PendingSwapChain;
+  k3d::SwapChainRef m_PendingSwapChain;
 };
 
-template <typename CmdEncoderSubT>
+template<typename CmdEncoderSubT>
 class CommandEncoder : public CmdEncoderSubT
 {
 public:
@@ -1155,32 +1195,38 @@ public:
     m_pQueue = m_MasterCmd->OwningQueue();
   }
 
-  void SetPipelineState(uint32 HashCode, rhi::PipelineStateRef const& pPipeline) override
+  void SetPipelineState(uint32 HashCode,
+                        k3d::PipelineStateRef const& pPipeline) override
   {
     K3D_ASSERT(pPipeline);
-    if (pPipeline->GetType() == rhi::EPSO_Compute)
-    {
-      ComputePipelineState * computePso = static_cast<ComputePipelineState*>(pPipeline.Get());
-      vkCmdBindPipeline(m_MasterCmd->NativeHandle(), VK_PIPELINE_BIND_POINT_COMPUTE, computePso->NativeHandle());
-    }
-    else
-    {
-      RenderPipelineState * gfxPso = static_cast<RenderPipelineState*>(pPipeline.Get());
-      vkCmdBindPipeline(m_MasterCmd->NativeHandle(), VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPso->NativeHandle());
+    if (pPipeline->GetType() == k3d::EPSO_Compute) {
+      ComputePipelineState* computePso =
+        static_cast<ComputePipelineState*>(pPipeline.Get());
+      vkCmdBindPipeline(m_MasterCmd->NativeHandle(),
+                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                        computePso->NativeHandle());
+    } else {
+      RenderPipelineState* gfxPso =
+        static_cast<RenderPipelineState*>(pPipeline.Get());
+      vkCmdBindPipeline(m_MasterCmd->NativeHandle(),
+                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        gfxPso->NativeHandle());
     }
   }
 
-  void SetPipelineLayout(rhi::PipelineLayoutRef const& pLayout) override
+  void SetPipelineLayout(k3d::PipelineLayoutRef const& pLayout) override
   {
     K3D_ASSERT(pLayout);
     auto pipelineLayout = StaticPointerCast<PipelineLayout>(pLayout);
     VkDescriptorSet sets[] = { pipelineLayout->GetNativeDescriptorSet() };
-    vkCmdBindDescriptorSets(m_MasterCmd->NativeHandle(), 
-      GetBindPoint(),
-      pipelineLayout->NativeHandle(), 
-      0, // first set
-      1, sets, // set count, 
-      0, NULL); // dynamic offset
+    vkCmdBindDescriptorSets(m_MasterCmd->NativeHandle(),
+                            GetBindPoint(),
+                            pipelineLayout->NativeHandle(),
+                            0, // first set
+                            1,
+                            sets, // set count,
+                            0,
+                            NULL); // dynamic offset
   }
 
   virtual void EndEncode() override
@@ -1204,19 +1250,20 @@ enum class ECmdLevel : uint8
 
 class ParallelCommandEncoder;
 using SpParallelCmdEncoder = SharedPtr<ParallelCommandEncoder>;
-class RenderCommandEncoder : public CommandEncoder<rhi::IRenderCommandEncoder>
+class RenderCommandEncoder : public CommandEncoder<k3d::IRenderCommandEncoder>
 {
 public:
-  using This = CommandEncoder<rhi::IRenderCommandEncoder>;
-  void SetScissorRect(const rhi::Rect&) override;
-  void SetViewport(const rhi::ViewportDesc&) override;
-  void SetIndexBuffer(const rhi::IndexBufferView& IBView) override;
-  void SetVertexBuffer(uint32 Slot, const rhi::VertexBufferView& VBView) override;
-  void SetPrimitiveType(rhi::EPrimitiveType) override;
-  void DrawInstanced(rhi::DrawInstancedParam) override;
-  void DrawIndexedInstanced(rhi::DrawIndexedInstancedParam) override;
+  using This = CommandEncoder<k3d::IRenderCommandEncoder>;
+  void SetScissorRect(const k3d::Rect&) override;
+  void SetViewport(const k3d::ViewportDesc&) override;
+  void SetIndexBuffer(const k3d::IndexBufferView& IBView) override;
+  void SetVertexBuffer(uint32 Slot,
+                       const k3d::VertexBufferView& VBView) override;
+  void SetPrimitiveType(k3d::EPrimitiveType) override;
+  void DrawInstanced(k3d::DrawInstancedParam) override;
+  void DrawIndexedInstanced(k3d::DrawIndexedInstancedParam) override;
   void EndEncode() override;
-  VkPipelineBindPoint GetBindPoint() const override 
+  VkPipelineBindPoint GetBindPoint() const override
   {
     return VK_PIPELINE_BIND_POINT_GRAPHICS;
   }
@@ -1225,20 +1272,22 @@ public:
   friend class ParallelCommandEncoder;
   template<typename T>
   friend class k3d::TRefCountInstance;
+
 protected:
   RenderCommandEncoder(SpCmdBuffer pCmd, ECmdLevel Level);
   RenderCommandEncoder(SpParallelCmdEncoder ParentEncoder, SpCmdBuffer pCmd);
+
 private:
   ECmdLevel m_Level;
 };
 using SpRenderCommandEncoder = SharedPtr<RenderCommandEncoder>;
-class ComputeCommandEncoder : public CommandEncoder<rhi::IComputeCommandEncoder>
+class ComputeCommandEncoder : public CommandEncoder<k3d::IComputeCommandEncoder>
 {
 public:
-  using This = CommandEncoder<rhi::IComputeCommandEncoder>;
+  using This = CommandEncoder<k3d::IComputeCommandEncoder>;
   void Dispatch(uint32 GroupCountX,
-    uint32 GroupCountY,
-    uint32 GroupCountZ) override; 
+                uint32 GroupCountY,
+                uint32 GroupCountZ) override;
   VkPipelineBindPoint GetBindPoint() const override
   {
     return VK_PIPELINE_BIND_POINT_COMPUTE;
@@ -1248,13 +1297,13 @@ public:
   friend class k3d::TRefCountInstance;
 };
 
-class ParallelCommandEncoder 
-  : public CommandEncoder<rhi::IParallelRenderCommandEncoder>
+class ParallelCommandEncoder
+  : public CommandEncoder<k3d::IParallelRenderCommandEncoder>
   , EnableSharedFromThis<ParallelCommandEncoder>
 {
 public:
-  using This = CommandEncoder<rhi::IParallelRenderCommandEncoder>;
-  rhi::RenderCommandEncoderRef SubRenderCommandEncoder() override;
+  using This = CommandEncoder<k3d::IParallelRenderCommandEncoder>;
+  k3d::RenderCommandEncoderRef SubRenderCommandEncoder() override;
   void EndEncode() override;
   VkPipelineBindPoint GetBindPoint() const override
   {
@@ -1263,19 +1312,20 @@ public:
   friend class CommandBuffer;
   template<typename T>
   friend class k3d::TRefCountInstance;
+
 private:
   bool m_RenderpassBegun = false;
   DynArray<SpRenderCommandEncoder> m_RecordedCmds;
 };
 
-class SwapChain : public TVkRHIObjectBase<VkSwapchainKHR, rhi::ISwapChain>
+class SwapChain : public TVkRHIObjectBase<VkSwapchainKHR, k3d::ISwapChain>
 {
 public:
-  using This = TVkRHIObjectBase<VkSwapchainKHR, rhi::ISwapChain>;
+  using This = TVkRHIObjectBase<VkSwapchainKHR, k3d::ISwapChain>;
 
   ~SwapChain();
 
-  SwapChain(Device::Ptr pDevice, void* pWindow, rhi::SwapChainDesc& Desc)
+  SwapChain(Device::Ptr pDevice, void* pWindow, k3d::SwapChainDesc& Desc)
     : SwapChain::This(pDevice)
   {
     Init(pWindow, Desc);
@@ -1286,24 +1336,21 @@ public:
   // ISwapChain::Resize
   void Resize(uint32 Width, uint32 Height) override;
   // ISwapChain::GetCurrentTexture
-  rhi::TextureRef GetCurrentTexture() override;
+  k3d::TextureRef GetCurrentTexture() override;
 
   void Present() override;
 
-  void QueuePresent(SpCmdQueue pQueue, rhi::SyncFenceRef pFence);
+  void QueuePresent(SpCmdQueue pQueue, k3d::SyncFenceRef pFence);
 
   void AcquireNextImage();
 
-  void Init(void* pWindow, rhi::SwapChainDesc& Desc);
-
-  void Initialize(void* WindowHandle, rhi::RenderViewportDesc& gfxSetting);
+  void Init(void* pWindow, k3d::SwapChainDesc& Desc);
 
   uint32 GetPresentQueueFamilyIndex() const
   {
     return m_SelectedPresentQueueFamilyIndex;
   }
-  uint32 AcquireNextImage(PtrSemaphore presentSemaphore, PtrFence pFence);
-  VkResult Present(uint32 imageIndex, PtrSemaphore renderingFinishSemaphore);
+
   uint32 GetBackBufferCount() const { return m_ReserveBackBufferCount; }
 
   VkSwapchainKHR GetSwapChain() const { return m_SwapChain; }
@@ -1315,7 +1362,7 @@ public:
 private:
   void InitSurface(void* WindowHandle);
   VkPresentModeKHR ChoosePresentMode();
-  std::pair<VkFormat, VkColorSpaceKHR> ChooseFormat(rhi::EPixelFormat& Format);
+  std::pair<VkFormat, VkColorSpaceKHR> ChooseFormat(k3d::EPixelFormat& Format);
   int ChooseQueueIndex();
   void InitSwapChain(uint32 numBuffers,
                      std::pair<VkFormat, VkColorSpaceKHR> color,
@@ -1324,8 +1371,10 @@ private:
 
 private:
   friend class CommandQueue;
+  friend class CommandBuffer;
 
-  VkSemaphore m_PresentSemaphore = VK_NULL_HANDLE;
+  VkSemaphore m_smpRenderFinish = VK_NULL_HANDLE;
+  VkSemaphore m_smpPresent = VK_NULL_HANDLE;
 
   VkExtent2D m_SwapchainExtent = {};
   VkSurfaceKHR m_Surface = VK_NULL_HANDLE;
@@ -1338,148 +1387,58 @@ private:
 
   VkFormat m_ColorAttachFmt = VK_FORMAT_UNDEFINED;
 
-  DynArray<rhi::TextureRef> m_Buffers;
+  DynArray<k3d::TextureRef> m_Buffers;
   std::vector<VkImage> m_ColorImages;
 };
-#if 0
-class RenderViewport
-  : public rhi::IRenderViewport
-  , public DeviceChild
-{
-public:
-  RenderViewport(Device::Ptr, void* windowHandle, rhi::RenderViewportDesc&);
-  ~RenderViewport() override;
-  bool InitViewport(void* windowHandle,
-                    rhi::IDevice* pDevice,
-                    rhi::RenderViewportDesc&) override;
 
-  void PrepareNextFrame() override;
-
-  bool Present(bool vSync) override;
-
-  rhi::RenderTargetRef GetRenderTarget(uint32 index) override;
-  rhi::RenderTargetRef GetCurrentBackRenderTarget() override;
-
-  uint32 GetSwapChainIndex() override;
-  uint32 GetSwapChainCount() override;
-
-  PtrSemaphore GetPresentSemaphore() const { return m_PresentSemaphore; }
-  PtrSemaphore GetRenderSemaphore() const { return m_RenderSemaphore; }
-
-  void AllocateDefaultRenderPass(rhi::RenderViewportDesc& gfxSetting);
-  void AllocateRenderTargets(rhi::RenderViewportDesc& gfxSetting);
-  VkRenderPass GetRenderPass() const;
-
-  uint32 GetWidth() const override
-  {
-    return m_pSwapChain->GetCurrentExtent().width;
-  }
-  uint32 GetHeight() const override
-  {
-    return m_pSwapChain->GetCurrentExtent().height;
-  }
-
-protected:
-  PtrSemaphore m_PresentSemaphore;
-  PtrSemaphore m_RenderSemaphore;
-  SpRenderpass m_RenderPass;
-
-private:
-  std::vector<rhi::RenderTargetRef> m_RenderTargets;
-
-  uint32 m_CurFrameId;
-  SwapChainRef m_pSwapChain;
-  uint32 m_NumBufferCount;
-};
-#endif
 class RenderPass;
-class FrameBuffer : public DeviceChild
+class FrameBuffer
 {
 public:
-  struct Attachment
-  {
-    Attachment(VkFormat format, VkSampleCountFlagBits samples);
-    explicit Attachment(VkImageView view) { this->ImageAttachment = view; }
-
-    virtual ~Attachment() {}
-
-    bool IsColorAttachment() const
-    {
-      return 0 != (FormatFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
-    }
-    bool IsDepthStencilAttachment() const
-    {
-      return 0 !=
-             (FormatFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-    }
-
-    VkFormat Format = VK_FORMAT_UNDEFINED;
-    VkFormatFeatureFlags FormatFeatures = 0;
-    VkSampleCountFlagBits Samples = VK_SAMPLE_COUNT_1_BIT;
-    VkImageView ImageAttachment;
-  };
-
-  struct Option
-  {
-    uint32 Width, Height;
-    std::vector<Attachment> Attachments;
-  };
-
   /**
    * create framebuffer with SwapChain ImageViews
    */
-  FrameBuffer(Device::Ptr pDevice, VkRenderPass renderPass, Option const& op);
-  FrameBuffer(Device::Ptr pDevice,
-              RenderPass* renderPass,
-              RenderTargetLayout const&);
+  FrameBuffer(Device::Ptr pDevice, SpRenderpass pRenderPass, k3d::RenderPassDesc const&);
   ~FrameBuffer();
 
   uint32 GetWidth() const { return m_Width; }
   uint32 GetHeight() const { return m_Height; }
-  VkFramebuffer const Get() const { return m_FrameBuffer; }
+  VkFramebuffer NativeHandle() const { return m_FrameBuffer; }
 
 private:
   friend class RenderPass;
-
+  WeakPtr<RenderPass> m_OwningRenderPass;
+  Device::Ptr m_Device;
   VkFramebuffer m_FrameBuffer = VK_NULL_HANDLE;
-  VkRenderPass m_RenderPass = VK_NULL_HANDLE;
   uint32 m_Width = 0;
   uint32 m_Height = 0;
 };
 
 using PtrFrameBuffer = std::shared_ptr<FrameBuffer>;
 
-class RenderPass : public DeviceChild
+class RenderPass : public TVkRHIObjectBase<VkRenderPass, k3d::IRenderPass>
 {
 public:
-  typedef RenderPass* Ptr;
+  using Super = TVkRHIObjectBase<VkRenderPass, k3d::IRenderPass>;
 
-  RenderPass(Device::Ptr pDevice, RenderpassOptions const& options);
-  RenderPass(Device::Ptr pDevice, RenderTargetLayout const& rtl);
+  RenderPass(Device::Ptr pDevice, k3d::RenderPassDesc const&);
+
+  void Begin(VkCommandBuffer Cmd, SpFramebuffer pFramebuffer,
+    VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE);
+  void End(VkCommandBuffer Cmd);
+
+  k3d::RenderPassDesc GetDesc() const override 
+  {
+    return k3d::RenderPassDesc();
+  }
+
   ~RenderPass();
 
-  void NextSubpass();
-
-  VkRenderPass GetPass() const { return m_RenderPass; }
-  RenderpassOptions const& GetOption() const { return m_Options; }
+  void Release() override;
 
 private:
-  RenderpassOptions m_Options;
-  PtrContext m_GfxContext;
-  PtrFrameBuffer m_FrameBuffer;
-  VkRenderPass m_RenderPass = VK_NULL_HANDLE;
-
-  uint32 mSubpass = 0;
-  std::vector<VkSampleCountFlagBits> mSubpassSampleCounts;
-  std::vector<uint32> mBarrieredAttachmentIndices;
-  std::vector<VkAttachmentDescription> mAttachmentDescriptors;
-  std::vector<VkClearValue> mAttachmentClearValues;
-
-  void Initialize(RenderpassOptions const& options);
-  void Initialize(RenderTargetLayout const& rtl);
-  void Destroy();
-
-  friend class FrameBuffer;
+  VkClearValue m_ClearVal[2];
+  VkRect2D  m_DefaultArea;
 };
 
 template<typename PipelineSubType>
@@ -1503,14 +1462,11 @@ public:
 
   void LoadPSO(String const& Path) override {}
 
-  VkPipeline NativeHandle() const 
-  {
-    return m_Pipeline;
-  }
+  VkPipeline NativeHandle() const { return m_Pipeline; }
 
 protected:
   VkPipelineShaderStageCreateInfo ConvertStageInfoFromShaderBundle(
-    rhi::ShaderBundle const& Bundle)
+    k3d::ShaderBundle const& Bundle)
   {
     return { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
              nullptr,
@@ -1526,24 +1482,23 @@ protected:
   VkPipelineCache m_PipelineCache;
 };
 
-class RenderPipelineState : public TPipelineState<rhi::IRenderPipelineState>
+class RenderPipelineState : public TPipelineState<k3d::IRenderPipelineState>
 {
 public:
   RenderPipelineState(Device::Ptr pDevice,
-                      rhi::RenderPipelineStateDesc const& desc,
-                      PipelineLayout* ppl);
+                      k3d::RenderPipelineStateDesc const& desc,
+                      k3d::PipelineLayoutRef ppl,
+                      k3d::RenderPassRef pRenderPass);
   virtual ~RenderPipelineState();
 
   void BindRenderPass(VkRenderPass RenderPass);
 
-  void SetRasterizerState(const rhi::RasterizerState&) override;
-  void SetBlendState(const rhi::BlendState&) override;
-  void SetDepthStencilState(const rhi::DepthStencilState&) override;
-  void SetSampler(rhi::SamplerRef) override;
-  void SetVertexInputLayout(rhi::VertexDeclaration const*,
-                            uint32 Count) override;
-  void SetPrimitiveTopology(const rhi::EPrimitiveType) override;
-  void SetRenderTargetFormat(const rhi::RenderTargetFormat&) override;
+  void SetRasterizerState(const k3d::RasterizerState&) override;
+  void SetBlendState(const k3d::BlendState&) override;
+  void SetDepthStencilState(const k3d::DepthStencilState&) override;
+  void SetSampler(k3d::SamplerRef) override;
+  void SetPrimitiveTopology(const k3d::EPrimitiveType) override;
+  void SetRenderTargetFormat(const k3d::RenderTargetFormat&) override;
 
   VkPipeline GetPipeline() const { return m_Pipeline; }
   void Rebuild() override;
@@ -1551,13 +1506,13 @@ public:
   /**
    * TOFIX
    */
-  rhi::EPipelineType GetType() const override
+  k3d::EPipelineType GetType() const override
   {
-    return rhi::EPipelineType::EPSO_Graphics;
+    return k3d::EPipelineType::EPSO_Graphics;
   }
 
 protected:
-  void InitWithDesc(rhi::RenderPipelineStateDesc const& desc);
+  void InitWithDesc(k3d::RenderPipelineStateDesc const& desc);
   void Destroy();
 
   friend class CommandContext;
@@ -1576,21 +1531,22 @@ private:
   VkPipelineVertexInputStateCreateInfo m_VertexInputState;
   std::vector<VkVertexInputBindingDescription> m_BindingDescriptions;
   std::vector<VkVertexInputAttributeDescription> m_AttributeDescriptions;
-  PipelineLayout* m_PipelineLayout;
+  WeakPtr<k3d::IRenderPass> m_WeakRenderPassRef;
+  WeakPtr<k3d::IPipelineLayout> m_weakPipelineLayoutRef;
 };
 
-class ComputePipelineState : public TPipelineState<rhi::IComputePipelineState>
+class ComputePipelineState : public TPipelineState<k3d::IComputePipelineState>
 {
 public:
   ComputePipelineState(Device::Ptr pDevice,
-                       rhi::ComputePipelineStateDesc const& desc,
+                       k3d::ComputePipelineStateDesc const& desc,
                        PipelineLayout* ppl);
 
   ~ComputePipelineState() override {}
 
-  rhi::EPipelineType GetType() const override
+  k3d::EPipelineType GetType() const override
   {
-    return rhi::EPipelineType::EPSO_Compute;
+    return k3d::EPipelineType::EPSO_Compute;
   }
   void Rebuild() override;
 
@@ -1602,32 +1558,32 @@ private:
 };
 
 class ShaderResourceView
-  : public TVkRHIObjectBase<VkImageView, rhi::IShaderResourceView>
+  : public TVkRHIObjectBase<VkImageView, k3d::IShaderResourceView>
 {
 public:
   ShaderResourceView(Device::Ptr pDevice,
-                     rhi::ResourceViewDesc const& desc,
-                     rhi::GpuResourceRef gpuResource);
+                     k3d::ResourceViewDesc const& desc,
+                     k3d::GpuResourceRef gpuResource);
   ~ShaderResourceView() override;
-  rhi::GpuResourceRef GetResource() const override
+  k3d::GpuResourceRef GetResource() const override
   {
-    return rhi::GpuResourceRef(m_WeakResource);
+    return k3d::GpuResourceRef(m_WeakResource);
   }
-  rhi::ResourceViewDesc GetDesc() const override { return m_Desc; }
+  k3d::ResourceViewDesc GetDesc() const override { return m_Desc; }
   VkImageView NativeImageView() const { return m_NativeObj; }
 
 private:
-  // rhi::GpuResourceRef		m_Resource;
-  WeakPtr<rhi::IGpuResource> m_WeakResource;
-  rhi::ResourceViewDesc m_Desc;
+  // k3d::GpuResourceRef		m_Resource;
+  WeakPtr<k3d::IGpuResource> m_WeakResource;
+  k3d::ResourceViewDesc m_Desc;
   VkImageViewCreateInfo m_TextureViewInfo;
 };
 
 class PipelineLayout
-  : public TVkRHIObjectBase<VkPipelineLayout, rhi::IPipelineLayout>
+  : public TVkRHIObjectBase<VkPipelineLayout, k3d::IPipelineLayout>
 {
 public:
-  PipelineLayout(Device::Ptr pDevice, rhi::PipelineLayoutDesc const& desc);
+  PipelineLayout(Device::Ptr pDevice, k3d::PipelineLayoutDesc const& desc);
   ~PipelineLayout() override;
 
   VkDescriptorSet GetNativeDescriptorSet() const
@@ -1635,15 +1591,15 @@ public:
     return static_cast<DescriptorSet*>(m_DescSet.Get())->GetNativeHandle();
   }
 
-  rhi::DescriptorRef GetDescriptorSet() const override { return m_DescSet; }
+  k3d::DescriptorRef GetDescriptorSet() const override { return m_DescSet; }
 
 protected:
-  void InitWithDesc(rhi::PipelineLayoutDesc const& desc);
+  void InitWithDesc(k3d::PipelineLayoutDesc const& desc);
   void Destroy();
   friend class RenderPipelineState;
 
 private:
-  rhi::DescriptorRef m_DescSet;
+  k3d::DescriptorRef m_DescSet;
   DescriptorSetLayoutRef m_DescSetLayout;
 };
 
@@ -1672,6 +1628,15 @@ private:
   VkCommandPool m_Pool;
   bool m_Transient;
   uint32 m_FamilyIndex;
+};
+
+struct SemaphoreCreateInfo : public VkSemaphoreCreateInfo
+{
+public:
+  static VkSemaphoreCreateInfo Create()
+  {
+    return { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
+  }
 };
 
 class Semaphore : public DeviceChild

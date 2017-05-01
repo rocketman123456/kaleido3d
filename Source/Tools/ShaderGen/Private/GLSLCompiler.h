@@ -10,13 +10,13 @@ namespace k3d
 {
 	typedef std::vector<uint32> SPIRV_T;
 
-    struct GLSLangCompiler : public rhi::IShCompiler
+    struct GLSLangCompiler : public k3d::IShCompiler
     {
         typedef ::k3d::SharedPtr<IShCompiler> Ptr;
-        virtual rhi::shc::EResult Compile(
+        virtual k3d::shc::EResult Compile(
                                           String const& src,
-                                          rhi::ShaderDesc const& inOp,
-                                          rhi::ShaderBundle & bundle) override;
+                                          k3d::ShaderDesc const& inOp,
+                                          k3d::ShaderBundle & bundle) override;
 		GLSLangCompiler();
         ~GLSLangCompiler() override;
     };

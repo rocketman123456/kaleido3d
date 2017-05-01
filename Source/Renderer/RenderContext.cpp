@@ -33,7 +33,7 @@ RenderContext::Init(RHIType type, uint32 w, uint32 h)
   pVkRHI->Initialize("RenderContext", true);
   pVkRHI->Start();
   auto pFactory = pVkRHI->GetFactory();
-  DynArray<rhi::DeviceRef> Devices;
+  DynArray<k3d::DeviceRef> Devices;
   pFactory->EnumDevices(Devices);
   m_pDevice = Devices[0];
 #else

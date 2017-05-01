@@ -13,7 +13,7 @@
 #include <string.h>
 
 using namespace std;
-using namespace rhi::shc;
+using namespace k3d::shc;
 
 namespace k3d
 {
@@ -29,11 +29,11 @@ namespace k3d
         sFinializeGlSlang();
     }
     
-    EResult MetalCompiler::Compile(String const& src, rhi::ShaderDesc const& inOp, rhi::ShaderBundle & bundle)
+    EResult MetalCompiler::Compile(String const& src, k3d::ShaderDesc const& inOp, k3d::ShaderBundle & bundle)
     {
-        if(inOp.Format == rhi::EShFmt_Text)
+        if(inOp.Format == k3d::EShFmt_Text)
         {
-            if(inOp.Lang == rhi::EShLang_MetalSL)
+            if(inOp.Lang == k3d::EShLang_MetalSL)
             {
                 if(m_IsMac)
                 {
@@ -48,10 +48,10 @@ namespace k3d
             {
                 bool canConvertToMetalSL = false;
                 switch (inOp.Lang) {
-                    case rhi::EShLang_ESSL:
-                    case rhi::EShLang_GLSL:
-                    case rhi::EShLang_HLSL:
-                    case rhi::EShLang_VkGLSL:
+                    case k3d::EShLang_ESSL:
+                    case k3d::EShLang_GLSL:
+                    case k3d::EShLang_HLSL:
+                    case k3d::EShLang_VkGLSL:
                         canConvertToMetalSL = true;
                         break;
                     default:
@@ -62,11 +62,11 @@ namespace k3d
                     EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
                     switch(inOp.Lang)
                     {
-                        case rhi::EShLang_ESSL:
-                        case rhi::EShLang_GLSL:
-                        case rhi::EShLang_VkGLSL:
+                        case k3d::EShLang_ESSL:
+                        case k3d::EShLang_GLSL:
+                        case k3d::EShLang_VkGLSL:
                             break;
-                        case rhi::EShLang_HLSL:
+                        case k3d::EShLang_HLSL:
                             messages = (EShMessages)(EShMsgVulkanRules | EShMsgSpvRules | EShMsgReadHlsl);
                             break;
                         default:
@@ -87,13 +87,13 @@ namespace k3d
                     if (!shader->parse(&Resources, 100, false, messages)) {
                         puts(shader->getInfoLog());
                         puts(shader->getInfoDebugLog());
-                        return rhi::shc::E_Failed;
+                        return k3d::shc::E_Failed;
                     }
                     program.addShader(shader);
                     if (!program.link(messages)) {
                         puts(program.getInfoLog());
                         puts(program.getInfoDebugLog());
-                        return rhi::shc::E_Failed;
+                        return k3d::shc::E_Failed;
                     }
                     std::vector<unsigned int> spirv;
                     glslang::GlslangToSpv(*program.getIntermediate(stage), spirv);
@@ -105,7 +105,7 @@ namespace k3d
                     }
                     else
                     {
-                        return rhi::shc::E_Failed;
+                        return k3d::shc::E_Failed;
                     }
                     uint32 bufferLoc = 0;
                     std::vector<spirv_cross::MSLVertexAttr> vertAttrs;
@@ -143,22 +143,22 @@ namespace k3d
                         if(ret == E_Failed)
                             return ret;
                         bundle.Desc = inOp;
-                        bundle.Desc.Format = rhi::EShFmt_ByteCode;
-                        bundle.Desc.Lang = rhi::EShLang_MetalSL;
+                        bundle.Desc.Format = k3d::EShFmt_ByteCode;
+                        bundle.Desc.Lang = k3d::EShLang_MetalSL;
                     }
                     else
                     {
                         bundle.RawData = { result.c_str() };
                         bundle.Desc = inOp;
-                        bundle.Desc.Format = rhi::EShFmt_Text;
-                        bundle.Desc.Lang = rhi::EShLang_MetalSL;
+                        bundle.Desc.Format = k3d::EShFmt_Text;
+                        bundle.Desc.Lang = k3d::EShLang_MetalSL;
                     }
                 }
             }
         }
         else
         {
-            if(inOp.Lang == rhi::EShLang_MetalSL)
+            if(inOp.Lang == k3d::EShLang_MetalSL)
             {
                 
             }

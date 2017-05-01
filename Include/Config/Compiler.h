@@ -2,6 +2,12 @@
 #include "Config.h"
 #include "PlatformTypes.h"
 
+#if defined(K3D_CPP_REFLECTOR)
+#define k3dAnnotate(...) __attribute__((annotate(#__VA_ARGS__)))
+#else
+#define k3dAnnotate(...)  
+#endif
+
 #if K3DCOMPILER_MSVC
 #pragma warning(disable:4100)
 #pragma warning(disable:4838) // close warning from DirectXMath

@@ -15,7 +15,7 @@ namespace k3d {
 #if USE_GLSLANG
 	using namespace ::glslang;
 #endif
-	using namespace rhi::shc;
+	using namespace k3d::shc;
 
 	ESemantic attributeNameToSemantic(std::string const& attribName)
 	{
@@ -45,22 +45,22 @@ namespace k3d {
         sFinializeGlSlang();
     }
     
-    rhi::shc::EResult
-	GLSLangCompiler::Compile(const String &src, const rhi::ShaderDesc &inOp, rhi::ShaderBundle &bundle)
+    k3d::shc::EResult
+	GLSLangCompiler::Compile(const String &src, const k3d::ShaderDesc &inOp, k3d::ShaderBundle &bundle)
     {
-        if(inOp.Format == rhi::EShaderFormat::EShFmt_Text)
+        if(inOp.Format == k3d::EShaderFormat::EShFmt_Text)
         {
-            if(inOp.Lang == rhi::EShLang_MetalSL)
-                return rhi::shc::E_Failed;
+            if(inOp.Lang == k3d::EShLang_MetalSL)
+                return k3d::shc::E_Failed;
             
             EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
             switch(inOp.Lang)
             {
-                case rhi::EShLang_ESSL:
-                case rhi::EShLang_GLSL:
-                case rhi::EShLang_VkGLSL:
+                case k3d::EShLang_ESSL:
+                case k3d::EShLang_GLSL:
+                case k3d::EShLang_VkGLSL:
                     break;
-                case rhi::EShLang_HLSL:
+                case k3d::EShLang_HLSL:
                     messages = (EShMessages)(EShMsgVulkanRules | EShMsgSpvRules | EShMsgReadHlsl);
                     break;
                 default:
@@ -81,20 +81,20 @@ namespace k3d {
             if (!shader->parse(&Resources, 100, false, messages)) {
                 puts(shader->getInfoLog());
                 puts(shader->getInfoDebugLog());
-                return rhi::shc::E_Failed;
+                return k3d::shc::E_Failed;
             }
             program.addShader(shader);
             if (!program.link(messages)) {
                 puts(program.getInfoLog());
                 puts(program.getInfoDebugLog());
-                return rhi::shc::E_Failed;
+                return k3d::shc::E_Failed;
             }
             std::vector<unsigned int> spirv;
             glslang::GlslangToSpv(*program.getIntermediate(stage), spirv);
             
             bundle.RawData = {spirv.data(), spirv.size() * sizeof(uint32)};
             bundle.Desc = inOp;
-			bundle.Desc.Format = rhi::EShFmt_ByteCode;
+			bundle.Desc.Format = k3d::EShFmt_ByteCode;
             
             if(program.buildReflection())
             {
@@ -103,7 +103,7 @@ namespace k3d {
             }
 			else
 			{
-				return rhi::shc::E_Failed;
+				return k3d::shc::E_Failed;
 			}
         }
 		else // byteCode reflection
@@ -118,7 +118,7 @@ namespace k3d {
 			bundle.RawData = src;
 			bundle.Desc = inOp;
 		}
-        return rhi::shc::E_Ok;
+        return k3d::shc::E_Ok;
     }
     
 }

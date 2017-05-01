@@ -1,8 +1,9 @@
-#include "Public/IVkRHI.h"
 #include "VkCommon.h"
+#include "Public/IVkRHI.h"
 #include "VkConfig.h"
 #include "VkEnums.h"
 #include "VkRHI.h"
+#include <RHI/RHIUtil.h>
 #include <Core/Module.h>
 #include <Core/Os.h>
 #include <Core/Utils/farmhash.h>
@@ -14,8 +15,7 @@
 #include <set>
 #include <sstream>
 
-using namespace rhi::shc;
-using namespace rhi;
+using namespace k3d::shc;
 using namespace std;
 
 PFN_vklogCallBack g_logCallBack = nullptr;
@@ -82,6 +82,9 @@ SetVkLogCallback(PFN_vklogCallBack func)
 }
 
 K3D_VK_BEGIN
+
+MapFramebuffer DeviceObjectCache::s_Framebuffer;
+MapRenderpass DeviceObjectCache::s_RenderPass;
 
 PtrCmdAlloc
 CommandAllocator::CreateAllocator(uint32 queueFamilyIndex,
@@ -153,10 +156,11 @@ CommandQueue::~CommandQueue()
   Destroy();
 }
 
-rhi::CommandBufferRef
-CommandQueue::ObtainCommandBuffer(rhi::ECommandUsageType const& Usage)
+k3d::CommandBufferRef
+CommandQueue::ObtainCommandBuffer(k3d::ECommandUsageType const& Usage)
 {
   VkCommandBuffer Cmd = m_ReUsableCmdBufferPool->RequestCommandBuffer();
+  m_ReUsableCmdBufferPool->BeginFrame();
   return MakeShared<CommandBuffer>(m_Device, SharedFromThis(), Cmd);
 }
 
@@ -186,7 +190,6 @@ CommandQueue::Submit(const std::vector<VkCommandBuffer>& cmdBufs,
 VkResult
 CommandQueue::Submit(const std::vector<VkSubmitInfo>& submits, VkFence fence)
 {
-  VKRHI_METHOD_TRACE
   K3D_ASSERT(!submits.empty());
   uint32_t submitCount = static_cast<uint32_t>(submits.size());
   const VkSubmitInfo* pSubmits = submits.data();
@@ -196,20 +199,24 @@ CommandQueue::Submit(const std::vector<VkSubmitInfo>& submits, VkFence fence)
 }
 
 void
-CommandQueue::Present(SwapChainRef& pSwapChain)
+CommandQueue::Present(SpSwapChain& pSwapChain)
 {
   VkResult PresentResult = VK_SUCCESS;
   VkPresentInfoKHR PresentInfo = {
     VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
     nullptr,
     1,                               // waitSemaphoreCount
-    &pSwapChain->m_PresentSemaphore, // pWaitSemaphores
+    &pSwapChain->m_smpPresent,       // pWaitSemaphores
     1,                               // SwapChainCount
     &pSwapChain->m_SwapChain,
     &pSwapChain->m_CurrentBufferID, // SwapChain Image Index
     &PresentResult
   };
   VkResult Ret = vkQueuePresentKHR(NativeHandle(), &PresentInfo);
+  VKLOG(Info, "CommandQueue :: Present, waiting on 0x%0x.", pSwapChain->m_smpPresent);
+  K3D_VK_VERIFY(Ret);
+  K3D_VK_VERIFY(PresentResult);
+  //vkQueueWaitIdle(NativeHandle());
 }
 
 void
@@ -245,30 +252,64 @@ CommandBuffer::Release()
 }
 
 void
-CommandBuffer::Commit()
+CommandBuffer::Commit(SyncFenceRef pFence)
 {
   if (!m_Ended) {
     // when in presenting, check if present image is in `Present State`
     // if not, make state transition
     if (m_PendingSwapChain) {
-      auto PresentImage = m_PendingSwapChain->GetCurrentTexture();
+      /*auto PresentImage = m_PendingSwapChain->GetCurrentTexture();
       auto ImageState = PresentImage->GetState();
-      if (ImageState != rhi::ERS_Present) {
-        Transition(PresentImage, rhi::ERS_Present);
-      }
+      if (ImageState != k3d::ERS_Present) {
+        Transition(PresentImage, k3d::ERS_Present);
+      }*/
     }
 
-    vkEndCommandBuffer(m_NativeObj);
+    auto Ret = vkEndCommandBuffer(m_NativeObj);
+    K3D_VK_VERIFY(Ret);
     m_Ended = true;
   }
+
+  if (pFence)
+  {
+    pFence->Reset();
+  }
+
   // Submit First
   VkSubmitInfo submitInfo = {};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-  submitInfo.waitSemaphoreCount = 0;
-  submitInfo.pWaitSemaphores = nullptr;
+
+  if (m_PendingSwapChain)
+  {
+    VkPipelineStageFlags stageFlags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    auto vSwapchain = StaticPointerCast<SwapChain>(m_PendingSwapChain);    
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = &vSwapchain->m_smpRenderFinish;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &vSwapchain->m_smpPresent;
+    submitInfo.pWaitDstStageMask = &stageFlags;
+    VKLOG(Info, "Command Buffer :: Commit wait on 0x%0x, signal on 0x%0x.",
+      vSwapchain->m_smpRenderFinish, vSwapchain->m_smpPresent);
+  }
+  else 
+  {
+    submitInfo.waitSemaphoreCount = 0;
+    submitInfo.pWaitSemaphores = nullptr;
+  }
+  
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &m_NativeObj;
-  m_OwningQueue->Submit({ submitInfo }, VK_NULL_HANDLE);
+  auto vFence = StaticPointerCast<Fence>(pFence);
+  auto Ret = m_OwningQueue->Submit({ submitInfo }, vFence ?
+    vFence->NativeHandle() : VK_NULL_HANDLE);
+  K3D_VK_VERIFY(Ret);
+
+  if (pFence)
+  {
+    pFence->WaitFor(10000);
+  }
+
+  m_OwningQueue->WaitIdle();
 
   // Do Present
   if (m_PendingSwapChain) {
@@ -281,7 +322,7 @@ CommandBuffer::Commit()
 }
 
 void
-CommandBuffer::Present(rhi::SwapChainRef pSwapChain, rhi::SyncFenceRef pFence)
+CommandBuffer::Present(k3d::SwapChainRef pSwapChain, k3d::SyncFenceRef pFence)
 {
   m_PendingSwapChain = pSwapChain;
 }
@@ -292,33 +333,35 @@ CommandBuffer::Reset()
   vkResetCommandBuffer(m_NativeObj, 0);
 }
 
-rhi::RenderCommandEncoderRef
-CommandBuffer::RenderCommandEncoder(rhi::RenderTargetRef const&,
-                                    rhi::RenderPipelineStateRef const&)
+k3d::RenderCommandEncoderRef
+CommandBuffer::RenderCommandEncoder(k3d::RenderPassDesc const& Desc)
 {
-  return MakeShared<vk::RenderCommandEncoder>(SharedFromThis(), ECmdLevel::Primary);
+  auto pRenderpass = StaticPointerCast<RenderPass>(m_Device->CreateRenderPass(Desc));
+  auto pFramebuffer = m_Device->GetOrCreateFramebuffer(Desc);
+  pRenderpass->Begin(m_NativeObj, pFramebuffer);
+  return MakeShared<vk::RenderCommandEncoder>(SharedFromThis(),
+                                              ECmdLevel::Primary);
 }
 
-rhi::ComputeCommandEncoderRef
-CommandBuffer::ComputeCommandEncoder(rhi::ComputePipelineStateRef const&)
+k3d::ComputeCommandEncoderRef
+CommandBuffer::ComputeCommandEncoder(k3d::ComputePipelineStateRef)
 {
-  return rhi::ComputeCommandEncoderRef();
+  return k3d::ComputeCommandEncoderRef();
 }
 
-rhi::ParallelRenderCommandEncoderRef
-CommandBuffer::ParallelRenderCommandEncoder(rhi::RenderTargetRef const&,
-                                            rhi::RenderPipelineStateRef const&)
+k3d::ParallelRenderCommandEncoderRef
+CommandBuffer::ParallelRenderCommandEncoder(k3d::RenderPassDesc const& Desc)
 {
-  return rhi::ParallelRenderCommandEncoderRef();
+  return k3d::ParallelRenderCommandEncoderRef();
 }
 
 void
-CommandBuffer::CopyTexture(const rhi::TextureCopyLocation& Dest,
-                           const rhi::TextureCopyLocation& Src)
+CommandBuffer::CopyTexture(const k3d::TextureCopyLocation& Dest,
+                           const k3d::TextureCopyLocation& Src)
 {
   K3D_ASSERT(Dest.pResource && Src.pResource);
-  if (Src.pResource->GetDesc().Type == rhi::EGT_Buffer &&
-      Dest.pResource->GetDesc().Type != rhi::EGT_Buffer) {
+  if (Src.pResource->GetDesc().Type == k3d::EGT_Buffer &&
+      Dest.pResource->GetDesc().Type != k3d::EGT_Buffer) {
     DynArray<VkBufferImageCopy> Copies;
     for (auto footprint : Src.SubResourceFootPrints) {
       VkBufferImageCopy bImgCpy = {};
@@ -344,13 +387,13 @@ CommandBuffer::CopyTexture(const rhi::TextureCopyLocation& Dest,
 }
 
 void
-CommandBuffer::CopyBuffer(rhi::GpuResourceRef Dest,
-                          rhi::GpuResourceRef Src,
-                          rhi::CopyBufferRegion const& Region)
+CommandBuffer::CopyBuffer(k3d::GpuResourceRef Dest,
+                          k3d::GpuResourceRef Src,
+                          k3d::CopyBufferRegion const& Region)
 {
   K3D_ASSERT(Dest && Src);
-  K3D_ASSERT(Dest->GetDesc().Type == rhi::EGT_Buffer &&
-             Src->GetDesc().Type == rhi::EGT_Buffer);
+  K3D_ASSERT(Dest->GetDesc().Type == k3d::EGT_Buffer &&
+             Src->GetDesc().Type == k3d::EGT_Buffer);
   auto DestBuf = StaticPointerCast<Buffer>(Dest);
   auto SrcBuf = StaticPointerCast<Buffer>(Src);
   vkCmdCopyBuffer(m_NativeObj,
@@ -360,13 +403,80 @@ CommandBuffer::CopyBuffer(rhi::GpuResourceRef Dest,
                   (const VkBufferCopy*)&Region);
 }
 
+void InferImageBarrierFromDesc(
+  SpTexture pTexture,
+  EResourceState const& DestState,
+  VkImageMemoryBarrier& Barrier)
+{
+  auto Desc = pTexture->GetDesc();
+  if (Desc.ViewType == k3d::EGVT_RTV)
+  {
+    VkImageLayout Src = pTexture->GetImageLayout();
+    switch (Src)
+    {
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+      Barrier.srcAccessMask = 0;
+      break;
+    case VK_IMAGE_LAYOUT_PREINITIALIZED:
+      Barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+      Barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+      Barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+      Barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+      Barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+      Barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      break;
+    default:
+      break;
+    }
+    
+    VkImageLayout Dest = g_ResourceState[DestState];
+    switch(Dest)
+    {
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+      Barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+      Barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+      Barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+      Barrier.dstAccessMask = Barrier.dstAccessMask | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+      if (Barrier.srcAccessMask == 0)
+      {
+        Barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+      }
+      Barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      break;
+    case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+      Barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+      break;
+    default:
+      break;
+    }
+  }
+}
+
 // TODO:
 void
-CommandBuffer::Transition(rhi::GpuResourceRef pResource,
-                          rhi::EResourceState const& State)
+CommandBuffer::Transition(k3d::GpuResourceRef pResource,
+                          k3d::EResourceState const& State)
 {
   auto Desc = pResource->GetDesc();
-  if (Desc.Type == rhi::EGT_Buffer) // Buffer Barrier
+  if (Desc.Type == k3d::EGT_Buffer) // Buffer Barrier
   {
     // buffer offset, size
     VkBufferMemoryBarrier BufferBarrier = {
@@ -374,14 +484,16 @@ CommandBuffer::Transition(rhi::GpuResourceRef pResource,
     };
   } else // ImageLayout Transition
   {
+    //if (pResource->GetState() == State)
+    //  return;
     auto pTexture = StaticPointerCast<Texture>(pResource);
     VkImageLayout SrcLayout = g_ResourceState[pTexture->GetState()];
     VkImageLayout DestLayout = g_ResourceState[State];
     VkImageMemoryBarrier ImageBarrier = {
       VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
       nullptr,
-      VK_ACCESS_MEMORY_READ_BIT,
-      VK_ACCESS_MEMORY_READ_BIT,
+      0, //srcAccessMask
+      VK_ACCESS_MEMORY_READ_BIT, //dstAccessMask
       SrcLayout,
       DestLayout,
       VK_QUEUE_FAMILY_IGNORED,
@@ -389,9 +501,20 @@ CommandBuffer::Transition(rhi::GpuResourceRef pResource,
       pTexture->NativeHandle(),
       pTexture->GetSubResourceRange()
     };
+    InferImageBarrierFromDesc(pTexture, State, ImageBarrier);
+    VkPipelineStageFlagBits SrcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkPipelineStageFlagBits DestStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    if (DestLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+    {
+      SrcStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    }
+    else if (DestLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+    {
+      DestStage = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+    }
     vkCmdPipelineBarrier(m_NativeObj,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                         SrcStage,
+                         DestStage,
                          0, // DependencyFlag
                          0,
                          nullptr,
@@ -420,11 +543,11 @@ CommandBuffer::CommandBuffer(Device::Ptr pDevice,
   K3D_VK_VERIFY(vkBeginCommandBuffer(m_NativeObj, &beginInfo));
 }
 
-
 /**
-* @see #RHIRect2VkRect2D
-*/
-void RHIRect2VkRect(const rhi::Rect & rect, VkRect2D & r2d)
+ * @see #RHIRect2VkRect2D
+ */
+void
+RHIRect2VkRect(const k3d::Rect& rect, VkRect2D& r2d)
 {
   r2d.extent.width = rect.Right - rect.Left;
   r2d.extent.height = rect.Bottom - rect.Top;
@@ -432,54 +555,73 @@ void RHIRect2VkRect(const rhi::Rect & rect, VkRect2D & r2d)
   r2d.offset.y = rect.Top;
 }
 
-void RenderCommandEncoder::SetScissorRect(const rhi::Rect &pRect)
+void
+RenderCommandEncoder::SetScissorRect(const k3d::Rect& pRect)
 {
   VkRect2D Rect2D;
   RHIRect2VkRect(pRect, Rect2D);
   vkCmdSetScissor(m_MasterCmd->NativeHandle(), 0, 1, &Rect2D);
 }
 
-void RenderCommandEncoder::SetViewport(const rhi::ViewportDesc &viewport)
+void
+RenderCommandEncoder::SetViewport(const k3d::ViewportDesc& viewport)
 {
-  vkCmdSetViewport(m_MasterCmd->NativeHandle(), 0, 1, reinterpret_cast<const VkViewport*>(&viewport));
+  vkCmdSetViewport(m_MasterCmd->NativeHandle(),
+                   0,
+                   1,
+                   reinterpret_cast<const VkViewport*>(&viewport));
 }
 
-void RenderCommandEncoder::SetIndexBuffer(const rhi::IndexBufferView & IBView)
+void
+RenderCommandEncoder::SetIndexBuffer(const k3d::IndexBufferView& IBView)
 {
   VkBuffer buf = (VkBuffer)(IBView.BufferLocation);
-  vkCmdBindIndexBuffer(m_MasterCmd->NativeHandle(), buf, 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindIndexBuffer(
+    m_MasterCmd->NativeHandle(), buf, 0, VK_INDEX_TYPE_UINT32);
 }
 
-void RenderCommandEncoder::SetVertexBuffer(uint32 Slot, const rhi::VertexBufferView & VBView)
+void
+RenderCommandEncoder::SetVertexBuffer(uint32 Slot,
+                                      const k3d::VertexBufferView& VBView)
 {
   VkBuffer buf = (VkBuffer)(VBView.BufferLocation);
   VkDeviceSize offsets[1] = { 0 };
   vkCmdBindVertexBuffers(m_MasterCmd->NativeHandle(), Slot, 1, &buf, offsets);
 }
 
-void RenderCommandEncoder::SetPrimitiveType(rhi::EPrimitiveType)
+void RenderCommandEncoder::SetPrimitiveType(k3d::EPrimitiveType)
 {
 }
 
-void RenderCommandEncoder::DrawInstanced(rhi::DrawInstancedParam drawParam)
+void
+RenderCommandEncoder::DrawInstanced(k3d::DrawInstancedParam drawParam)
 {
-  vkCmdDraw(m_MasterCmd->NativeHandle(), drawParam.VertexCountPerInstance, drawParam.InstanceCount,
-    drawParam.StartVertexLocation, drawParam.StartInstanceLocation);
+  vkCmdDraw(m_MasterCmd->NativeHandle(),
+            drawParam.VertexCountPerInstance,
+            drawParam.InstanceCount,
+            drawParam.StartVertexLocation,
+            drawParam.StartInstanceLocation);
 }
 
-void RenderCommandEncoder::DrawIndexedInstanced(rhi::DrawIndexedInstancedParam drawParam)
+void
+RenderCommandEncoder::DrawIndexedInstanced(
+  k3d::DrawIndexedInstancedParam drawParam)
 {
-  vkCmdDrawIndexed(m_MasterCmd->NativeHandle(), drawParam.IndexCountPerInstance, drawParam.InstanceCount,
-    drawParam.StartIndexLocation, drawParam.BaseVertexLocation, drawParam.StartInstanceLocation);
+  vkCmdDrawIndexed(m_MasterCmd->NativeHandle(),
+                   drawParam.IndexCountPerInstance,
+                   drawParam.InstanceCount,
+                   drawParam.StartIndexLocation,
+                   drawParam.BaseVertexLocation,
+                   drawParam.StartInstanceLocation);
 }
 
-void RenderCommandEncoder::EndEncode()
+void
+RenderCommandEncoder::EndEncode()
 {
-  if (m_Level != ECmdLevel::Secondary)
-  {
+  if (m_Level != ECmdLevel::Secondary) {
     vkCmdEndRenderPass(m_MasterCmd->NativeHandle());
   }
-  This::EndEncode();
+  //This::EndEncode();
 }
 
 // from primary render command buffer
@@ -487,41 +629,40 @@ RenderCommandEncoder::RenderCommandEncoder(SpCmdBuffer pCmd, ECmdLevel Level)
   : RenderCommandEncoder::This(pCmd)
   , m_Level(Level)
 {
-  VkRenderPassBeginInfo renderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-  /*renderPassBeginInfo.renderPass = pRT->GetRenderpass();
-  renderPassBeginInfo.renderArea = pRT->GetRenderArea();*/
-  //renderPassBeginInfo.pClearValues = pRT->m_ClearValues;
-  renderPassBeginInfo.clearValueCount = 2;
-  //renderPassBeginInfo.framebuffer = pRT->GetFramebuffer();
-  vkCmdBeginRenderPass(OwningCmd(), &renderPassBeginInfo, 
-    VK_SUBPASS_CONTENTS_INLINE);
 }
 
-RenderCommandEncoder::RenderCommandEncoder(SpParallelCmdEncoder ParentEncoder, SpCmdBuffer pCmd)
+RenderCommandEncoder::RenderCommandEncoder(SpParallelCmdEncoder ParentEncoder,
+                                           SpCmdBuffer pCmd)
   : RenderCommandEncoder::This(pCmd)
   , m_Level(ECmdLevel::Secondary)
 {
   // render pass begun before allocate
 }
 
-void ComputeCommandEncoder::Dispatch(uint32 GroupCountX,
-  uint32 GroupCountY,
-  uint32 GroupCountZ)
+void
+ComputeCommandEncoder::Dispatch(uint32 GroupCountX,
+                                uint32 GroupCountY,
+                                uint32 GroupCountZ)
 {
-  vkCmdDispatch(m_MasterCmd->NativeHandle(), GroupCountX, GroupCountY, GroupCountZ);
+  vkCmdDispatch(
+    m_MasterCmd->NativeHandle(), GroupCountX, GroupCountY, GroupCountZ);
 }
 
-rhi::RenderCommandEncoderRef ParallelCommandEncoder::SubRenderCommandEncoder()
+k3d::RenderCommandEncoderRef
+ParallelCommandEncoder::SubRenderCommandEncoder()
 {
-  if (!m_RenderpassBegun)
-  {
-    VkRenderPassBeginInfo renderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+  if (!m_RenderpassBegun) {
+    VkRenderPassBeginInfo renderPassBeginInfo = {
+      VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO
+    };
     /*renderPassBeginInfo.renderPass = pRT->GetRenderpass();
     renderPassBeginInfo.renderArea = pRT->GetRenderArea();*/
-    //renderPassBeginInfo.pClearValues = pRT->m_ClearValues;
+    // renderPassBeginInfo.pClearValues = pRT->m_ClearValues;
     renderPassBeginInfo.clearValueCount = 2;
-    //renderPassBeginInfo.framebuffer = pRT->GetFramebuffer();
-    vkCmdBeginRenderPass(m_MasterCmd->NativeHandle(), &renderPassBeginInfo, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+    // renderPassBeginInfo.framebuffer = pRT->GetFramebuffer();
+    vkCmdBeginRenderPass(m_MasterCmd->NativeHandle(),
+                         &renderPassBeginInfo,
+                         VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
     m_RenderpassBegun = true;
   }
   // allocate secondary cmd
@@ -529,18 +670,17 @@ rhi::RenderCommandEncoderRef ParallelCommandEncoder::SubRenderCommandEncoder()
   return nullptr;
 }
 
-void ParallelCommandEncoder::EndEncode()
+void
+ParallelCommandEncoder::EndEncode()
 {
   DynArray<VkCommandBuffer> Cmds;
-  for (auto pCmd : m_RecordedCmds)
-  {
+  for (auto pCmd : m_RecordedCmds) {
     Cmds.Append(pCmd->OwningCmd());
   }
   vkCmdExecuteCommands(m_MasterCmd->NativeHandle(), Cmds.Count(), Cmds.Data());
 
   // end renderpass
-  if (m_RenderpassBegun)
-  {
+  if (m_RenderpassBegun) {
     vkCmdEndRenderPass(m_MasterCmd->NativeHandle());
   }
 
@@ -548,18 +688,10 @@ void ParallelCommandEncoder::EndEncode()
 }
 
 RenderTarget::RenderTarget(Device::Ptr pDevice,
-                           rhi::RenderTargetLayout const& Layout)
-  : DeviceChild(pDevice)
-{
-}
-
-RenderTarget::RenderTarget(Device::Ptr pDevice,
                            Texture::TextureRef texture,
                            SpFramebuffer framebuffer,
                            VkRenderPass renderpass)
   : DeviceChild(pDevice)
-  , m_RenderTexture(texture)
-  , m_Framebuffer(framebuffer)
   , m_Renderpass(renderpass)
 {
   m_AcquireSemaphore = PtrSemaphore(new Semaphore(pDevice));
@@ -572,7 +704,7 @@ RenderTarget::~RenderTarget()
 VkFramebuffer
 RenderTarget::GetFramebuffer() const
 {
-  return m_Framebuffer->Get();
+  return m_Framebuffer;
 }
 
 VkRenderPass
@@ -584,7 +716,7 @@ RenderTarget::GetRenderpass() const
 Texture::TextureRef
 RenderTarget::GetTexture() const
 {
-  return m_RenderTexture;
+  return nullptr;
 }
 
 VkRect2D
@@ -592,24 +724,26 @@ RenderTarget::GetRenderArea() const
 {
   VkRect2D renderArea = {};
   renderArea.offset = { 0, 0 };
-  renderArea.extent = { m_Framebuffer->GetWidth(), m_Framebuffer->GetHeight() };
+  renderArea.extent = { /*m_Framebuffer->GetWidth(), m_Framebuffer->GetHeight()*/ };
   return renderArea;
 }
 
-rhi::GpuResourceRef
+k3d::GpuResourceRef
 RenderTarget::GetBackBuffer()
 {
-  return m_RenderTexture;
+  return nullptr;
 }
 
 RenderPipelineState::RenderPipelineState(
   Device::Ptr pDevice,
-  rhi::RenderPipelineStateDesc const& desc,
-  PipelineLayout* ppl)
-  : TPipelineState<rhi::IRenderPipelineState>(pDevice)
+  k3d::RenderPipelineStateDesc const& desc, 
+  k3d::PipelineLayoutRef pPipelineLayout,
+  k3d::RenderPassRef pRenderPass)
+  : TPipelineState<k3d::IRenderPipelineState>(pDevice)
   , m_RenderPass(VK_NULL_HANDLE)
   , m_GfxCreateInfo{}
-  , m_PipelineLayout(ppl)
+  , m_WeakRenderPassRef(pRenderPass)
+  , m_weakPipelineLayoutRef(pPipelineLayout)
 {
   memset(&m_GfxCreateInfo, 0, sizeof(m_GfxCreateInfo));
   InitWithDesc(desc);
@@ -679,7 +813,7 @@ RenderPipelineState::LoadPSO(const char* path)
 }
 #endif
 void
-RenderPipelineState::SetRasterizerState(const rhi::RasterizerState& rasterState)
+RenderPipelineState::SetRasterizerState(const k3d::RasterizerState& rasterState)
 {
   m_RasterizationState.sType =
     VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -701,7 +835,7 @@ RenderPipelineState::SetRasterizerState(const rhi::RasterizerState& rasterState)
 // Blending is not used in this example
 // TODO
 void
-RenderPipelineState::SetBlendState(const rhi::BlendState& blendState)
+RenderPipelineState::SetBlendState(const k3d::BlendState& blendState)
 {
   m_ColorBlendState.sType =
     VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -715,7 +849,7 @@ RenderPipelineState::SetBlendState(const rhi::BlendState& blendState)
 
 void
 RenderPipelineState::SetDepthStencilState(
-  const rhi::DepthStencilState& depthStencilState)
+  const k3d::DepthStencilState& depthStencilState)
 {
   m_DepthStencilState.sType =
     VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -737,45 +871,12 @@ RenderPipelineState::SetDepthStencilState(
   this->m_GfxCreateInfo.pDepthStencilState = &m_DepthStencilState;
 }
 
-void RenderPipelineState::SetSampler(rhi::SamplerRef)
+void RenderPipelineState::SetSampler(k3d::SamplerRef)
 {
 }
 
 void
-RenderPipelineState::SetVertexInputLayout(
-  rhi::VertexDeclaration const* vertDecs,
-  uint32 Count)
-{
-  K3D_ASSERT(vertDecs && Count > 0 && m_BindingDescriptions.empty());
-  for (uint32 i = 0; i < Count; i++) {
-    rhi::VertexDeclaration const& vertDec = vertDecs[i];
-    VkVertexInputBindingDescription bindingDesc = {
-      vertDec.BindID, vertDec.Stride, VK_VERTEX_INPUT_RATE_VERTEX
-    };
-    VkVertexInputAttributeDescription attribDesc = {
-      vertDec.AttributeIndex,
-      vertDec.BindID,
-      g_VertexFormatTable[vertDec.Format],
-      vertDec.OffSet
-    };
-    m_BindingDescriptions.push_back(bindingDesc);
-    m_AttributeDescriptions.push_back(attribDesc);
-  }
-  m_VertexInputState.sType =
-    VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-  m_VertexInputState.pNext = NULL;
-  m_VertexInputState.vertexBindingDescriptionCount =
-    (uint32)m_BindingDescriptions.size();
-  m_VertexInputState.pVertexBindingDescriptions = m_BindingDescriptions.data();
-  m_VertexInputState.vertexAttributeDescriptionCount =
-    (uint32)m_AttributeDescriptions.size();
-  m_VertexInputState.pVertexAttributeDescriptions =
-    m_AttributeDescriptions.data();
-  this->m_GfxCreateInfo.pVertexInputState = &m_VertexInputState;
-}
-
-void
-RenderPipelineState::SetPrimitiveTopology(const rhi::EPrimitiveType Type)
+RenderPipelineState::SetPrimitiveTopology(const k3d::EPrimitiveType Type)
 {
   m_InputAssemblyState.sType =
     VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -784,17 +885,17 @@ RenderPipelineState::SetPrimitiveTopology(const rhi::EPrimitiveType Type)
 }
 
 void
-RenderPipelineState::SetRenderTargetFormat(const rhi::RenderTargetFormat&)
+RenderPipelineState::SetRenderTargetFormat(const k3d::RenderTargetFormat&)
 {
 }
 
 DynArray<VkVertexInputAttributeDescription>
-RHIInputAttribs(rhi::VertexInputState ia)
+RHIInputAttribs(k3d::VertexInputState ia)
 {
   DynArray<VkVertexInputAttributeDescription> iad;
-  for (uint32 i = 0; i < rhi::VertexInputState::kMaxVertexBindings; i++) {
+  for (uint32 i = 0; i < k3d::VertexInputState::kMaxVertexBindings; i++) {
     auto attrib = ia.Attribs[i];
-    if (attrib.Slot == rhi::VertexInputState::kInvalidValue)
+    if (attrib.Slot == k3d::VertexInputState::kInvalidValue)
       break;
     iad.Append(
       { i, attrib.Slot, g_VertexFormatTable[attrib.Format], attrib.OffSet });
@@ -803,12 +904,12 @@ RHIInputAttribs(rhi::VertexInputState ia)
 }
 
 DynArray<VkVertexInputBindingDescription>
-RHIInputLayouts(rhi::VertexInputState const& ia)
+RHIInputLayouts(k3d::VertexInputState const& ia)
 {
   DynArray<VkVertexInputBindingDescription> ibd;
-  for (uint32 i = 0; i < rhi::VertexInputState::kMaxVertexLayouts; i++) {
+  for (uint32 i = 0; i < k3d::VertexInputState::kMaxVertexLayouts; i++) {
     auto layout = ia.Layouts[i];
-    if (layout.Stride == rhi::VertexInputState::kInvalidValue)
+    if (layout.Stride == k3d::VertexInputState::kInvalidValue)
       break;
     ibd.Append({ i, layout.Stride, g_InputRates[layout.Rate] });
   }
@@ -816,7 +917,7 @@ RHIInputLayouts(rhi::VertexInputState const& ia)
 }
 
 void
-RenderPipelineState::InitWithDesc(rhi::RenderPipelineStateDesc const& desc)
+RenderPipelineState::InitWithDesc(k3d::RenderPipelineStateDesc const& desc)
 {
   // setup shaders
   if (desc.VertexShader.RawData.Length() != 0) {
@@ -890,11 +991,15 @@ RenderPipelineState::InitWithDesc(rhi::RenderPipelineStateDesc const& desc)
   VkPipelineColorBlendStateCreateInfo colorBlendState = {
     VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, NULL
   };
-  VkPipelineColorBlendAttachmentState blendAttachmentState[1] = {};
-  blendAttachmentState[0].colorWriteMask = 0xf;
-  blendAttachmentState[0].blendEnable = desc.Blend.Enable ? VK_TRUE : VK_FALSE;
-  colorBlendState.attachmentCount = 1;
-  colorBlendState.pAttachments = blendAttachmentState;
+  DynArray<VkPipelineColorBlendAttachmentState> AttachmentStates;
+  AttachmentStates.Resize(desc.AttachmentsBlend.Count());
+  for (auto i = 0; i< desc.AttachmentsBlend.Count(); i++)
+  {
+    AttachmentStates[i].colorWriteMask = desc.AttachmentsBlend[i].Blend.ColorWriteMask;
+    AttachmentStates[i].blendEnable = desc.AttachmentsBlend[i].Blend.Enable? VK_TRUE : VK_FALSE;
+  }
+  colorBlendState.attachmentCount = desc.AttachmentsBlend.Count();
+  colorBlendState.pAttachments = AttachmentStates.Data();
 
   auto IAs = RHIInputAttribs(desc.InputState);
   auto IBs = RHIInputLayouts(desc.InputState);
@@ -941,11 +1046,8 @@ RenderPipelineState::InitWithDesc(rhi::RenderPipelineStateDesc const& desc)
   this->m_GfxCreateInfo.pMultisampleState = &msInfo;
   this->m_GfxCreateInfo.pViewportState = &vpInfo;
 
-#if 0
-  m_RenderPass = RHIRoot::GetViewport(0)->GetRenderPass();
-#endif
-  this->m_GfxCreateInfo.renderPass = m_RenderPass;
-  this->m_GfxCreateInfo.layout = m_PipelineLayout->NativeHandle();
+  this->m_GfxCreateInfo.renderPass = static_cast<RenderPass*>(m_WeakRenderPassRef.Get())->NativeHandle();
+  this->m_GfxCreateInfo.layout = static_cast<PipelineLayout*>(m_weakPipelineLayoutRef.Get())->NativeHandle();
 
   // Finalize
   Rebuild();
@@ -963,9 +1065,9 @@ RenderPipelineState::Destroy()
 
 ComputePipelineState::ComputePipelineState(
   Device::Ptr pDevice,
-  rhi::ComputePipelineStateDesc const& desc,
+  k3d::ComputePipelineStateDesc const& desc,
   PipelineLayout* ppl)
-  : TPipelineState<rhi::IComputePipelineState>(pDevice)
+  : TPipelineState<k3d::IComputePipelineState>(pDevice)
   , m_ComputeCreateInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO }
   , m_PipelineLayout(ppl)
 {
@@ -995,7 +1097,7 @@ ComputePipelineState::Rebuild()
 }
 
 PipelineLayout::PipelineLayout(Device::Ptr pDevice,
-                               rhi::PipelineLayoutDesc const& desc)
+                               k3d::PipelineLayoutDesc const& desc)
   : PipelineLayout::ThisObj(pDevice)
   , m_DescSetLayout(nullptr)
   , m_DescSet()
@@ -1058,13 +1160,13 @@ ExtractBindingsFromTable(::k3d::DynArray<Binding> const& bindings)
 }
 
 void
-PipelineLayout::InitWithDesc(rhi::PipelineLayoutDesc const& desc)
+PipelineLayout::InitWithDesc(k3d::PipelineLayoutDesc const& desc)
 {
   DescriptorAllocator::Options options;
   BindingArray array = ExtractBindingsFromTable(desc.Bindings);
   auto alloc = m_Device->NewDescriptorAllocator(16, array);
   m_DescSetLayout = m_Device->NewDescriptorSetLayout(array);
-  m_DescSet = rhi::DescriptorRef(DescriptorSet::CreateDescSet(
+  m_DescSet = k3d::DescriptorRef(DescriptorSet::CreateDescSet(
     alloc, m_DescSetLayout->GetNativeHandle(), array, m_Device));
 
   VkPipelineLayoutCreateInfo pPipelineLayoutCreateInfo = {};
@@ -1090,27 +1192,27 @@ EConstants		= 0x000000010
 };
 */
 VkDescriptorType
-RHIDataType2VkType(rhi::shc::EBindType const& type)
+RHIDataType2VkType(k3d::shc::EBindType const& type)
 {
   switch (type) {
-    case rhi::shc::EBindType::EBlock:
+    case k3d::shc::EBindType::EBlock:
       return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    case rhi::shc::EBindType::ESampler:
+    case k3d::shc::EBindType::ESampler:
       return VK_DESCRIPTOR_TYPE_SAMPLER;
-    case rhi::shc::EBindType::ESampledImage:
+    case k3d::shc::EBindType::ESampledImage:
       return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    case rhi::shc::EBindType::ESamplerImageCombine:
+    case k3d::shc::EBindType::ESamplerImageCombine:
       return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    case rhi::shc::EBindType::EStorageImage:
+    case k3d::shc::EBindType::EStorageImage:
       return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    case rhi::shc::EBindType::EStorageBuffer:
+    case k3d::shc::EBindType::EStorageBuffer:
       return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   }
   return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 }
 
 VkDescriptorSetLayoutBinding
-RHIBinding2VkBinding(rhi::shc::Binding const& binding)
+RHIBinding2VkBinding(k3d::shc::Binding const& binding)
 {
   VkDescriptorSetLayoutBinding vkbinding = {};
   vkbinding.descriptorType = RHIDataType2VkType(binding.VarType);
@@ -1159,7 +1261,7 @@ DescriptorAllocator::Initialize(uint32 maxSets, BindingArray const& bindings)
   VkDescriptorPoolCreateInfo createInfo = {
     VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO
   };
-  createInfo.flags = m_Options.CreateFlags;
+  createInfo.flags = m_Options.CreateFlags | VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
   createInfo.maxSets = 1;
   createInfo.poolSizeCount = typeCounts.size();
   createInfo.pPoolSizes = typeCounts.size() == 0 ? nullptr : typeCounts.data();
@@ -1173,8 +1275,8 @@ DescriptorAllocator::Destroy()
   if (VK_NULL_HANDLE == m_Pool || !GetRawDevice())
     return;
   vkDestroyDescriptorPool(GetRawDevice(), m_Pool, nullptr);
+  VKLOG(Info, "DescriptorAllocator :: Destroy ... 0x%0x.", m_Pool);
   m_Pool = VK_NULL_HANDLE;
-  VKLOG(Info, "DescriptorAllocator-destroying vkDestroyDescriptorPool...");
 }
 
 DescriptorSetLayout::DescriptorSetLayout(Device::Ptr pDevice,
@@ -1239,7 +1341,7 @@ DescriptorSet::~DescriptorSet()
 }
 
 void
-DescriptorSet::Update(uint32 bindSet, rhi::SamplerRef pRHISampler)
+DescriptorSet::Update(uint32 bindSet, k3d::SamplerRef pRHISampler)
 {
   auto pSampler = StaticPointerCast<Sampler>(pRHISampler);
   VkDescriptorImageInfo imageInfo = {
@@ -1258,11 +1360,11 @@ DescriptorSet::Update(uint32 bindSet, rhi::SamplerRef pRHISampler)
 }
 
 void
-DescriptorSet::Update(uint32 bindSet, rhi::GpuResourceRef gpuResource)
+DescriptorSet::Update(uint32 bindSet, k3d::GpuResourceRef gpuResource)
 {
   auto desc = gpuResource->GetDesc();
   switch (desc.Type) {
-    case rhi::EGT_Buffer: {
+    case k3d::EGT_Buffer: {
       VkDescriptorBufferInfo bufferInfo = {
         (VkBuffer)gpuResource->GetLocation(), 0, gpuResource->GetSize()
       };
@@ -1277,10 +1379,10 @@ DescriptorSet::Update(uint32 bindSet, rhi::GpuResourceRef gpuResource)
             gpuResource->GetSize());
       break;
     }
-    case rhi::EGT_Texture1D:
-    case rhi::EGT_Texture2D:
-    case rhi::EGT_Texture3D:
-    case rhi::EGT_Texture2DArray: // combined/seperated image sampler should be
+    case k3d::EGT_Texture1D:
+    case k3d::EGT_Texture2D:
+    case k3d::EGT_Texture3D:
+    case k3d::EGT_Texture2DArray: // combined/seperated image sampler should be
                                   // considered
     {
       auto pTex = k3d::StaticPointerCast<Texture>(gpuResource);
@@ -1355,225 +1457,117 @@ DescriptorSet::Destroy()
   VKRHI_METHOD_TRACE
 }
 
-RenderPass::RenderPass(Device::Ptr pDevice, RenderpassOptions const& options)
-  : DeviceChild(pDevice)
-  , m_Options(options)
+VkAttachmentDescription
+ConvertAttachDesc(k3d::AttachmentDesc const& Desc)
 {
-  Initialize(options);
+  auto pTexture = StaticPointerCast<Texture>(Desc.pTexture);
+  VkFormat Format = g_FormatTable[pTexture->GetDesc().TextureDesc.Format];
+  VkAttachmentDescription AttachDesc = {
+    0,                                // VkAttachmentDescriptionFlags    flags;
+    Format,                           // VkFormat                        format;
+    VK_SAMPLE_COUNT_1_BIT,            // VkSampleCountFlagBits           samples;
+    g_LoadAction[Desc.LoadAction],    // VkAttachmentLoadOp              loadOp;
+    g_StoreAction[Desc.StoreAction],  // VkAttachmentStoreOp             storeOp;
+    g_LoadAction[Desc.LoadAction],    // VkAttachmentLoadOp              stencilLoadOp;
+    g_StoreAction[Desc.StoreAction],  // VkAttachmentStoreOp             stencilStoreOp;
+    VK_IMAGE_LAYOUT_UNDEFINED,        // VkImageLayout                   initialLayout;
+    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR         // VkImageLayout                   finalLayout;
+  };
+  return AttachDesc;
 }
 
-RenderPass::RenderPass(Device::Ptr pDevice, RenderTargetLayout const& rtl)
-  : DeviceChild(pDevice)
+RenderPass::RenderPass(Device::Ptr pDevice, k3d::RenderPassDesc const& desc)
+  : Super(pDevice)
 {
-  Initialize(rtl);
+  memcpy(&m_ClearVal[0].color, desc.ColorAttachments[0].ClearColor, sizeof(m_ClearVal[0].color));
+#if 0
+  m_ClearVal[1].depthStencil.depth = desc.pDepthAttachment->ClearDepth;
+  m_ClearVal[1].depthStencil.stencil = desc.pStencilAttachment->ClearStencil;
+#endif
+  DynArray<VkImageView> AttachViews;
+  DynArray<VkAttachmentDescription> Attachs;
+  DynArray<VkAttachmentReference> ColorRefers;
+  uint32 ColorIndex = 0;
+  // process color attachments
+  for (auto colorAttach : desc.ColorAttachments) {
+    auto pTexture = StaticPointerCast<Texture>(colorAttach.pTexture);
+    AttachViews.Append(pTexture->NativeView());
+    Attachs.Append(ConvertAttachDesc(colorAttach));
+    ColorRefers.Append({ ColorIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
+    ColorIndex++;
+  }
+
+  VkSubpassDescription defaultSubpass = {
+    0,                                //VkSubpassDescriptionFlags       flags;
+    VK_PIPELINE_BIND_POINT_GRAPHICS,  //VkPipelineBindPoint             pipelineBindPoint;
+    0,                                //uint32_t                        inputAttachmentCount;
+    nullptr,                          //const VkAttachmentReference*    pInputAttachments;
+    ColorRefers.Count(),              //uint32_t                        colorAttachmentCount;
+    ColorRefers.Data(),               //const VkAttachmentReference*    pColorAttachments;
+  //const VkAttachmentReference*    pResolveAttachments;
+  //const VkAttachmentReference*    pDepthStencilAttachment;
+  //uint32_t                        preserveAttachmentCount;
+  //const uint32_t*                 pPreserveAttachments;
+  };
+
+
+  VkSubpassDependency dependency = { 0 };
+  dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+  dependency.dstSubpass = 0;
+  dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  dependency.srcAccessMask = 0;
+  dependency.dstAccessMask = 0;
+  
+  VkRenderPassCreateInfo renderPassCreateInfo = {
+    VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+    nullptr,
+    0,
+    Attachs.Count(),
+    Attachs.Data(),
+    1,                  // uint32_t                          subpassCount;
+    &defaultSubpass,    // const VkSubpassDescription*       pSubpasses;
+    1,                  // uint32_t                          dependencyCount;
+    &dependency  // const VkSubpassDependency*        pDependencies
+  };
+  // TODO: add at least one subpass
+  auto Ret = vkCreateRenderPass(
+    NativeDevice(), &renderPassCreateInfo, nullptr, &m_NativeObj);
+}
+
+void RenderPass::Begin(VkCommandBuffer Cmd, SpFramebuffer pFramebuffer, VkSubpassContents contents)
+{
+  VkRect2D RenderArea;
+  RenderArea.offset = { 0,0 };
+  RenderArea.extent = { pFramebuffer->GetWidth(), pFramebuffer->GetHeight() };
+  VkRenderPassBeginInfo RenderBeginInfo = {
+    VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr,
+    m_NativeObj, pFramebuffer->NativeHandle(),
+    RenderArea,
+    1, m_ClearVal               // uint32_t               clearValueCount;
+                                // const VkClearValue*    pClearValues;
+  };
+  vkCmdBeginRenderPass(Cmd, &RenderBeginInfo, contents);
+  VKLOG(Info, "Begin renderpass, fbo: 0x%0x.", pFramebuffer->NativeHandle());
+}
+
+void RenderPass::End(VkCommandBuffer Cmd)
+{
+  vkCmdEndRenderPass(Cmd);
+}
+
+void
+RenderPass::Release()
+{
+  if (m_NativeObj) {
+    vkDestroyRenderPass(NativeDevice(), m_NativeObj, nullptr);
+    m_NativeObj = VK_NULL_HANDLE;
+  }
 }
 
 RenderPass::~RenderPass()
 {
-  Destroy();
-}
-
-void
-RenderPass::NextSubpass()
-{
-  //  m_GfxContext->NextSubpass(VK_SUBPASS_CONTENTS_INLINE);
-  //  ++mSubpass;
-}
-
-void
-RenderPass::Initialize(RenderpassOptions const& options)
-{
-  if (VK_NULL_HANDLE != m_RenderPass) {
-    return;
-  }
-
-  m_Options = options;
-
-  K3D_ASSERT(options.m_Attachments.size() > 0);
-  K3D_ASSERT(options.m_Subpasses.size() > 0);
-
-  // Populate attachment descriptors
-  const size_t numAttachmentDesc = options.m_Attachments.size();
-  mAttachmentDescriptors.resize(numAttachmentDesc);
-  mAttachmentClearValues.resize(numAttachmentDesc);
-  for (size_t i = 0; i < numAttachmentDesc; ++i) {
-    mAttachmentDescriptors[i] = options.m_Attachments[i].GetDescription();
-    mAttachmentClearValues[i] = options.m_Attachments[i].GetClearValue();
-  }
-
-  // Populate attachment references
-  const size_t numSubPasses = options.m_Subpasses.size();
-  std::vector<Subpass::AttachReferences> subPassAttachmentRefs(numSubPasses);
-  for (size_t i = 0; i < numSubPasses; ++i) {
-    const auto& subPass = options.m_Subpasses[i];
-
-    // Color attachments
-    {
-      // Allocate elements for color attachments
-      const size_t numColorAttachments = subPass.m_ColorAttachments.size();
-      subPassAttachmentRefs[i].Color.resize(numColorAttachments);
-      subPassAttachmentRefs[i].Resolve.resize(numColorAttachments);
-
-      // Populate color and resolve attachments
-      for (size_t j = 0; j < numColorAttachments; ++j) {
-        // color
-        uint32_t colorAttachmentIndex = subPass.m_ColorAttachments[j];
-        VkImageLayout colorImageLayout =
-          mAttachmentDescriptors[colorAttachmentIndex].initialLayout;
-        ;
-        subPassAttachmentRefs[i].Color[j] = {};
-        subPassAttachmentRefs[i].Color[j].attachment = colorAttachmentIndex;
-        subPassAttachmentRefs[i].Color[j].layout = colorImageLayout;
-        // resolve
-        uint32_t resolveAttachmentIndex = subPass.m_ResolveAttachments[j];
-        subPassAttachmentRefs[i].Resolve[j] = {};
-        subPassAttachmentRefs[i].Resolve[j].attachment = resolveAttachmentIndex;
-        subPassAttachmentRefs[i].Resolve[j].layout =
-          colorImageLayout; // Not a mistake, this is on purpose
-      }
-    }
-
-    // Depth/stencil attachment
-    std::vector<VkAttachmentReference> depthStencilAttachmentRef;
-    if (!subPass.m_DepthStencilAttachment.empty()) {
-      // Allocate elements for depth/stencil attachments
-      subPassAttachmentRefs[i].Depth.resize(1);
-
-      // Populate depth/stencil attachments
-      uint32_t attachmentIndex = subPass.m_DepthStencilAttachment[0];
-      subPassAttachmentRefs[i].Depth[0] = {};
-      subPassAttachmentRefs[i].Depth[0].attachment = attachmentIndex;
-      subPassAttachmentRefs[i].Depth[0].layout =
-        mAttachmentDescriptors[attachmentIndex].initialLayout;
-    }
-
-    // Preserve attachments
-    if (!subPass.m_PreserveAttachments.empty()) {
-      subPassAttachmentRefs[i].Preserve = subPass.m_PreserveAttachments;
-    }
-  }
-
-  // Populate sub passes
-  std::vector<VkSubpassDescription> subPassDescs(numSubPasses);
-  for (size_t i = 0; i < numSubPasses; ++i) {
-    const auto& colorAttachmentRefs = subPassAttachmentRefs[i].Color;
-    const auto& resolveAttachmentRefs = subPassAttachmentRefs[i].Resolve;
-    const auto& depthStencilAttachmentRef = subPassAttachmentRefs[i].Depth;
-    const auto& preserveAttachmentRefs = subPassAttachmentRefs[i].Preserve;
-
-    bool noResolves = true;
-    for (const auto& attachRef : resolveAttachmentRefs) {
-      if (VK_ATTACHMENT_UNUSED != attachRef.attachment) {
-        noResolves = false;
-        break;
-      }
-    }
-
-    subPassDescs[i] = {};
-    auto& desc = subPassDescs[i];
-    desc.pipelineBindPoint = options.m_Subpasses[i].m_PipelineBindPoint;
-    desc.flags = 0;
-    desc.inputAttachmentCount = 0;
-    desc.pInputAttachments = nullptr;
-    desc.colorAttachmentCount =
-      static_cast<uint32_t>(colorAttachmentRefs.size());
-    desc.pColorAttachments =
-      colorAttachmentRefs.empty() ? nullptr : colorAttachmentRefs.data();
-    desc.pResolveAttachments = (resolveAttachmentRefs.empty() || noResolves)
-                                 ? nullptr
-                                 : resolveAttachmentRefs.data();
-    desc.pDepthStencilAttachment = depthStencilAttachmentRef.empty()
-                                     ? nullptr
-                                     : depthStencilAttachmentRef.data();
-    desc.preserveAttachmentCount =
-      static_cast<uint32_t>(preserveAttachmentRefs.size());
-    desc.pPreserveAttachments =
-      preserveAttachmentRefs.empty() ? nullptr : preserveAttachmentRefs.data();
-  }
-
-  // Cache the subpass sample counts
-  for (auto& subpass : m_Options.m_Subpasses) {
-    VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
-    // Look at color attachments first..
-    if (!subpass.m_ColorAttachments.empty()) {
-      uint32_t attachmentIndex = subpass.m_ColorAttachments[0];
-      sampleCount =
-        m_Options.m_Attachments[attachmentIndex].m_Description.samples;
-    }
-    // ..and then look at depth attachments
-    if ((VK_SAMPLE_COUNT_1_BIT == sampleCount) &&
-        (!subpass.m_DepthStencilAttachment.empty())) {
-      uint32_t attachmentIndex = subpass.m_DepthStencilAttachment[0];
-      sampleCount =
-        m_Options.m_Attachments[attachmentIndex].m_Description.samples;
-    }
-    // Cache it
-    mSubpassSampleCounts.push_back(sampleCount);
-  }
-
-  std::vector<VkSubpassDependency> dependencies;
-  for (auto& subpassDep : m_Options.m_SubpassDependencies) {
-    dependencies.push_back(subpassDep.m_Dependency);
-  }
-
-  // Create render pass
-  VkRenderPassCreateInfo renderPassCreateInfo = {};
-  renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-  renderPassCreateInfo.pNext = nullptr;
-  renderPassCreateInfo.attachmentCount =
-    static_cast<uint32_t>(mAttachmentDescriptors.size());
-  renderPassCreateInfo.pAttachments = mAttachmentDescriptors.data();
-  renderPassCreateInfo.subpassCount =
-    static_cast<uint32_t>(subPassDescs.size());
-  renderPassCreateInfo.pSubpasses =
-    subPassDescs.empty() ? nullptr : subPassDescs.data();
-  renderPassCreateInfo.dependencyCount =
-    static_cast<uint32_t>(dependencies.size());
-  renderPassCreateInfo.pDependencies =
-    dependencies.empty() ? nullptr : dependencies.data();
-  K3D_VK_VERIFY(vkCreateRenderPass(
-    GetRawDevice(), &renderPassCreateInfo, nullptr, &m_RenderPass));
-}
-
-void
-RenderPass::Initialize(RenderTargetLayout const& rtl)
-{
-  VkSubpassDescription subpass = {};
-  subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-  subpass.flags = 0;
-  subpass.inputAttachmentCount = 0;
-  subpass.pInputAttachments = nullptr;
-  subpass.colorAttachmentCount = rtl.GetNumColorAttachments();
-  subpass.pColorAttachments = rtl.GetColorAttachmentReferences();
-  subpass.pResolveAttachments = rtl.GetResolveAttachmentReferences();
-  subpass.pDepthStencilAttachment = rtl.GetDepthStencilAttachmentReference();
-  subpass.preserveAttachmentCount = 0;
-  subpass.pPreserveAttachments = nullptr;
-
-  VkRenderPassCreateInfo renderPassCreateInfo = {};
-  renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-  renderPassCreateInfo.pNext = nullptr;
-
-  renderPassCreateInfo.attachmentCount = rtl.GetNumAttachments();
-  renderPassCreateInfo.pAttachments = rtl.GetAttachmentDescriptions();
-
-  renderPassCreateInfo.subpassCount = 1;
-  renderPassCreateInfo.pSubpasses = &subpass;
-  renderPassCreateInfo.dependencyCount = 0;
-  renderPassCreateInfo.pDependencies = nullptr;
-  K3D_VK_VERIFY(vkCreateRenderPass(
-    GetRawDevice(), &renderPassCreateInfo, nullptr, &m_RenderPass));
-}
-
-void
-RenderPass::Destroy()
-{
-  if (VK_NULL_HANDLE == m_RenderPass) {
-    return;
-  }
-  VKLOG(Info, "RenderPass destroy... -- %0x.", m_RenderPass);
-  vkDestroyRenderPass(GetRawDevice(), m_RenderPass, nullptr);
-  m_RenderPass = VK_NULL_HANDLE;
+  Release();
 }
 
 VkImageAspectFlags
@@ -1601,45 +1595,37 @@ DetermineAspectMask(VkFormat format)
   return result;
 }
 
-FrameBuffer::FrameBuffer(Device::Ptr pDevice,
-                         VkRenderPass renderPass,
-                         FrameBuffer::Option const& op)
-  : DeviceChild(pDevice)
-  , m_RenderPass(renderPass)
-  , m_Width(op.Width)
-  , m_Height(op.Height)
+FrameBuffer::FrameBuffer(Device::Ptr pDevice, SpRenderpass pRenderPass, k3d::RenderPassDesc const& desc)
+  : m_Device(pDevice)
+  , m_OwningRenderPass(pRenderPass)
 {
-  VKRHI_METHOD_TRACE
-  for (auto& elem : op.Attachments) {
-    if (elem.ImageAttachment) {
-      continue;
-    }
+  DynArray<VkImageView> AttachViews;
+  for (auto colorAttach : desc.ColorAttachments) {
+    auto pTexture = StaticPointerCast<Texture>(colorAttach.pTexture);
+    AttachViews.Append(pTexture->NativeView());
   }
-
-  std::vector<VkImageView> attachments;
-  for (const auto& elem : op.Attachments) {
-    attachments.push_back(elem.ImageAttachment);
-  }
-
-  VkFramebufferCreateInfo createInfo = {};
-  createInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-  createInfo.pNext = nullptr;
-  createInfo.renderPass = m_RenderPass;
-  createInfo.attachmentCount = static_cast<uint32_t>(op.Attachments.size());
-  createInfo.pAttachments = attachments.data();
-  createInfo.width = m_Width;
-  createInfo.height = m_Height;
+  // create framebuffer
+  VkFramebufferCreateInfo createInfo = {
+    VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, nullptr,
+  };
+  // get default image size
+  auto defaultImageDesc =
+    StaticPointerCast<Texture>(desc.ColorAttachments[0].pTexture)
+    ->GetDesc()
+    .TextureDesc;
+  createInfo.renderPass = m_OwningRenderPass->NativeHandle();
+  createInfo.attachmentCount = AttachViews.Count();
+  createInfo.pAttachments = AttachViews.Data();
+  createInfo.width = defaultImageDesc.Width;
+  createInfo.height = defaultImageDesc.Height;
   createInfo.layers = 1;
   createInfo.flags = 0;
-  K3D_VK_VERIFY(
-    vkCreateFramebuffer(GetRawDevice(), &createInfo, nullptr, &m_FrameBuffer));
-}
 
-FrameBuffer::FrameBuffer(Device::Ptr pDevice,
-                         RenderPass* renderPass,
-                         RenderTargetLayout const&)
-  : DeviceChild(pDevice)
-{
+  m_Width = createInfo.width;
+  m_Height = createInfo.height;
+
+  K3D_VK_VERIFY(
+    vkCreateFramebuffer(m_Device->GetRawDevice(), &createInfo, nullptr, &m_FrameBuffer));
 }
 
 FrameBuffer::~FrameBuffer()
@@ -1648,10 +1634,10 @@ FrameBuffer::~FrameBuffer()
     return;
   }
   VKLOG(Info, "FrameBuffer destroy... -- %0x.", m_FrameBuffer);
-  vkDestroyFramebuffer(GetRawDevice(), m_FrameBuffer, nullptr);
+  vkDestroyFramebuffer(m_Device->GetRawDevice(), m_FrameBuffer, nullptr);
   m_FrameBuffer = VK_NULL_HANDLE;
 }
-
+#if 0
 FrameBuffer::Attachment::Attachment(VkFormat format,
                                     VkSampleCountFlagBits samples)
 {
@@ -1662,7 +1648,7 @@ FrameBuffer::Attachment::Attachment(VkFormat format,
     FormatFeatures = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
   }
 }
-
+#endif
 SwapChain::~SwapChain()
 {
   Release();
@@ -1681,9 +1667,13 @@ SwapChain::Release()
       m_Device->m_Gpu->GetInstance()->m_Instance, m_Surface, nullptr);
     m_Surface = VK_NULL_HANDLE;
   }
-  if (m_PresentSemaphore) {
-    vkDestroySemaphore(NativeDevice(), m_PresentSemaphore, nullptr);
-    m_PresentSemaphore = VK_NULL_HANDLE;
+  if (m_smpPresent) {
+    vkDestroySemaphore(NativeDevice(), m_smpPresent, nullptr);
+    m_smpPresent = VK_NULL_HANDLE;
+  }
+  if (m_smpRenderFinish) {
+    vkDestroySemaphore(NativeDevice(), m_smpRenderFinish, nullptr);
+    m_smpRenderFinish = VK_NULL_HANDLE;
   }
 }
 
@@ -1692,7 +1682,7 @@ SwapChain::Resize(uint32 Width, uint32 Height)
 {
 }
 
-rhi::TextureRef
+k3d::TextureRef
 SwapChain::GetCurrentTexture()
 {
   return m_Buffers[m_CurrentBufferID];
@@ -1704,47 +1694,18 @@ SwapChain::Present()
 }
 
 void
-SwapChain::QueuePresent(SpCmdQueue pQueue, rhi::SyncFenceRef pFence)
+SwapChain::QueuePresent(SpCmdQueue pQueue, k3d::SyncFenceRef pFence)
 {
   VkPresentInfoKHR PresentInfo = {};
 }
 
 void
-SwapChain::AcquireNextImage()
-{
-  VkResult ret = vkAcquireNextImageKHR(NativeDevice(),
-                                       m_SwapChain,
-                                       UINT64_MAX,
-                                       m_PresentSemaphore,
-                                       VK_NULL_HANDLE,
-                                       &m_CurrentBufferID);
-}
-
-static VkImageViewCreateInfo
-CreateViewForSwapChain(VkImage Image, VkFormat Format)
-{
-  VkImageViewCreateInfo ViewCreateInfo = {
-    VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-    nullptr,
-    0,
-    Image,
-    VK_IMAGE_VIEW_TYPE_2D,
-    Format,
-    { VK_COMPONENT_SWIZZLE_R,
-      VK_COMPONENT_SWIZZLE_G,
-      VK_COMPONENT_SWIZZLE_B,
-      VK_COMPONENT_SWIZZLE_A },
-    { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-  };
-  return ViewCreateInfo;
-}
-
-void
-SwapChain::Init(void* pWindow, rhi::SwapChainDesc& Desc)
+SwapChain::Init(void* pWindow, k3d::SwapChainDesc& Desc)
 {
   InitSurface(pWindow);
   VkPresentModeKHR swapchainPresentMode = ChoosePresentMode();
   std::pair<VkFormat, VkColorSpaceKHR> chosenFormat = ChooseFormat(Desc.Format);
+  Desc.Format = ConvertToRHIFormat(chosenFormat.first);
   m_SelectedPresentQueueFamilyIndex = ChooseQueueIndex();
   m_SwapchainExtent = { Desc.Width, Desc.Height };
   VkSurfaceCapabilitiesKHR surfProperties;
@@ -1767,12 +1728,19 @@ SwapChain::Init(void* pWindow, rhi::SwapChainDesc& Desc)
                                         &m_ReserveBackBufferCount,
                                         m_ColorImages.data()));
   for (auto ColorImage : m_ColorImages) {
-    VkImageViewCreateInfo ViewCreateInfo =
-      CreateViewForSwapChain(ColorImage, m_ColorAttachFmt);
-    VkImageView View = VK_NULL_HANDLE;
-    vkCreateImageView(NativeDevice(), &ViewCreateInfo, nullptr, &View);
-    m_Buffers.Append(Texture::CreateFromSwapChain(
-      ColorImage, View, ViewCreateInfo, SharedDevice()));
+    k3d::ResourceDesc ImageDesc;
+    ImageDesc.Type = k3d::EGT_Texture2D;
+    ImageDesc.ViewType = k3d::EGVT_RTV;
+    ImageDesc.Flag = k3d::EGRAF_DeviceVisible;
+    ImageDesc.Origin = k3d::ERO_Swapchain;
+    ImageDesc.TextureDesc.Format = Desc.Format;
+    ImageDesc.TextureDesc.Width = m_SwapchainExtent.width;
+    ImageDesc.TextureDesc.Height = m_SwapchainExtent.height;
+    ImageDesc.TextureDesc.Depth = 1;
+    ImageDesc.TextureDesc.Layers = 1;
+    ImageDesc.TextureDesc.MipLevels = 1;
+    m_Buffers.Append(MakeShared<Texture>(ImageDesc,
+      ColorImage, SharedDevice(), false));
   }
   Desc.NumBuffers = m_ReserveBackBufferCount;
   VKLOG(
@@ -1785,87 +1753,36 @@ SwapChain::Init(void* pWindow, rhi::SwapChainDesc& Desc)
     VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0
   };
   vkCreateSemaphore(
-    NativeDevice(), &SemaphoreInfo, nullptr, &m_PresentSemaphore);
+    NativeDevice(), &SemaphoreInfo, nullptr, &m_smpPresent);
+  vkCreateSemaphore(
+    NativeDevice(), &SemaphoreInfo, nullptr, &m_smpRenderFinish);
 
   AcquireNextImage();
 }
 
 void
-SwapChain::Initialize(void* WindowHandle, rhi::RenderViewportDesc& gfxSetting)
+SwapChain::AcquireNextImage()
 {
-  InitSurface(WindowHandle);
-  VkPresentModeKHR swapchainPresentMode = ChoosePresentMode();
-  std::pair<VkFormat, VkColorSpaceKHR> chosenFormat =
-    ChooseFormat(gfxSetting.ColorFormat);
-  m_SelectedPresentQueueFamilyIndex = ChooseQueueIndex();
-  m_SwapchainExtent = { gfxSetting.Width, gfxSetting.Height };
-  VkSurfaceCapabilitiesKHR surfProperties;
-  K3D_VK_VERIFY(
-    m_Device->m_Gpu->GetSurfaceCapabilitiesKHR(m_Surface, &surfProperties));
-  m_SwapchainExtent = surfProperties.currentExtent;
-  uint32 desiredNumBuffers = kMath::Clamp(gfxSetting.BackBufferCount,
-                                          surfProperties.minImageCount,
-                                          surfProperties.maxImageCount);
-  m_DesiredBackBufferCount = desiredNumBuffers;
-  InitSwapChain(m_DesiredBackBufferCount,
-                chosenFormat,
-                swapchainPresentMode,
-                surfProperties.currentTransform);
-  K3D_VK_VERIFY(vkGetSwapchainImagesKHR(
-    NativeDevice(), m_SwapChain, &m_ReserveBackBufferCount, nullptr));
-  m_ColorImages.resize(m_ReserveBackBufferCount);
-  K3D_VK_VERIFY(vkGetSwapchainImagesKHR(NativeDevice(),
-                                        m_SwapChain,
-                                        &m_ReserveBackBufferCount,
-                                        m_ColorImages.data()));
-  gfxSetting.BackBufferCount = m_ReserveBackBufferCount;
-  VKLOG(
-    Info,
-    "[SwapChain::Initialize] desired imageCount=%d, reserved imageCount = %d.",
-    m_DesiredBackBufferCount,
-    m_ReserveBackBufferCount);
-}
-
-uint32
-SwapChain::AcquireNextImage(PtrSemaphore presentSemaphore, PtrFence pFence)
-{
-  VkResult result = vkAcquireNextImageKHR(
-    NativeDevice(),
+  VkResult Ret = vkAcquireNextImageKHR(NativeDevice(),
     m_SwapChain,
     UINT64_MAX,
-    presentSemaphore ? presentSemaphore->m_Semaphore : VK_NULL_HANDLE,
-    pFence ? pFence->NativeHandle() : VK_NULL_HANDLE,
+    m_smpRenderFinish,
+    VK_NULL_HANDLE,
     &m_CurrentBufferID);
-  switch (result) {
-    case VK_SUCCESS:
-    case VK_SUBOPTIMAL_KHR:
-      break;
-    case VK_ERROR_OUT_OF_DATE_KHR:
-      // OnWindowSizeChanged();
-      VKLOG(Info, "Swapchain need update");
-    default:
-      break;
-  }
-  return m_CurrentBufferID;
-}
 
-VkResult
-SwapChain::Present(uint32 imageIndex, PtrSemaphore renderingFinishSemaphore)
-{
-#if 0
-  VkSemaphore renderSem = renderingFinishSemaphore
-                            ? renderingFinishSemaphore->GetNativeHandle()
-                            : VK_NULL_HANDLE;
-  VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                                   nullptr };
-  presentInfo.pImageIndices = &imageIndex;
-  presentInfo.swapchainCount = m_SwapChain ? 1 : 0;
-  presentInfo.pSwapchains = &m_SwapChain;
-  presentInfo.waitSemaphoreCount = renderSem ? 1 : 0;
-  presentInfo.pWaitSemaphores = &renderSem;
-  return vkQueuePresentKHR(GetImmCmdQueue()->GetNativeHandle(), &presentInfo);
-#endif
-  return VK_SUCCESS;
+  VKLOG(Info, "SwapChain :: AcquireNextImage, acquiring on 0x%0x, id = %d.",
+    m_smpRenderFinish, m_CurrentBufferID);
+  switch (Ret) {
+  case VK_SUCCESS:
+  case VK_SUBOPTIMAL_KHR:
+    break;
+  case VK_ERROR_OUT_OF_DATE_KHR:
+    // OnWindowSizeChanged();
+    VKLOG(Info, "Swapchain need update");
+  default:
+    break;
+  }
+  K3D_VK_VERIFY(Ret);
 }
 
 void
@@ -1917,7 +1834,7 @@ SwapChain::ChoosePresentMode()
 }
 
 std::pair<VkFormat, VkColorSpaceKHR>
-SwapChain::ChooseFormat(rhi::EPixelFormat& Format)
+SwapChain::ChooseFormat(k3d::EPixelFormat& Format)
 {
   uint32_t formatCount;
   K3D_VK_VERIFY(
@@ -1984,224 +1901,7 @@ SwapChain::InitSwapChain(uint32 numBuffers,
     vkCreateSwapchainKHR(NativeDevice(), &swapchainCI, nullptr, &m_SwapChain));
   VKLOG(Info, "Init Swapchain with ColorFmt(%d)", m_ColorAttachFmt);
 }
-#if 0
-RenderViewport::RenderViewport(Device::Ptr pDevice,
-                               void* windowHandle,
-                               rhi::RenderViewportDesc& setting)
-  : m_NumBufferCount(-1)
-  , DeviceChild(pDevice)
-  , m_CurFrameId(0)
-{
-  if (pDevice) {
-    //m_pSwapChain = pDevice->NewSwapChain(setting);
-    m_pSwapChain->Initialize(windowHandle, setting);
-    m_NumBufferCount = m_pSwapChain->GetBackBufferCount();
-    VKLOG(
-      Info,
-      "RenderViewport-Initialized: width(%d), height(%d), swapImage num(%d).",
-      setting.Width,
-      setting.Height,
-      m_NumBufferCount);
-    m_PresentSemaphore = GetDevice()->NewSemaphore();
-    m_RenderSemaphore = GetDevice()->NewSemaphore();
-  }
-}
 
-RenderViewport::~RenderViewport()
-{
-  VKLOG(Info, "RenderViewport-Destroyed..");
-}
-
-bool
-RenderViewport::InitViewport(void* windowHandle,
-                             rhi::IDevice* pDevice,
-                             rhi::RenderViewportDesc& gfxSetting)
-{
-  AllocateDefaultRenderPass(gfxSetting);
-  AllocateRenderTargets(gfxSetting);
-  return true;
-}
-
-void
-RenderViewport::PrepareNextFrame()
-{
-  VKRHI_METHOD_TRACE
-  m_CurFrameId = m_pSwapChain->AcquireNextImage(m_PresentSemaphore, nullptr);
-  std::stringstream stream;
-  stream << "Current Frame Id = " << m_CurFrameId << " acquiring " << std::hex
-         << std::setfill('0') << m_PresentSemaphore->GetNativeHandle();
-  VKLOG(Info, stream.str().c_str());
-}
-
-bool
-RenderViewport::Present(bool vSync)
-{
-  VKRHI_METHOD_TRACE
-  std::stringstream stream;
-  stream << "present ----- renderSemaphore " << std::hex << std::setfill('0')
-         << m_RenderSemaphore->GetNativeHandle();
-  VKLOG(Info, stream.str().c_str());
-  VkResult result = m_pSwapChain->Present(m_CurFrameId, m_RenderSemaphore);
-  return result == VK_SUCCESS;
-}
-
-rhi::RenderTargetRef
-RenderViewport::GetRenderTarget(uint32 index)
-{
-  return m_RenderTargets[index];
-}
-
-rhi::RenderTargetRef
-RenderViewport::GetCurrentBackRenderTarget()
-{
-  return m_RenderTargets[m_CurFrameId];
-}
-
-uint32
-RenderViewport::GetSwapChainIndex()
-{
-  return m_CurFrameId;
-}
-
-uint32
-RenderViewport::GetSwapChainCount()
-{
-  return m_pSwapChain->GetBackBufferCount();
-}
-
-void
-RenderViewport::AllocateDefaultRenderPass(rhi::RenderViewportDesc& gfxSetting)
-{
-  VKRHI_METHOD_TRACE
-  VkFormat colorformat = m_pSwapChain ? m_pSwapChain->GetFormat()
-                                      : g_FormatTable[gfxSetting.ColorFormat];
-  RenderpassAttachment colorAttach =
-    RenderpassAttachment::CreateColor(colorformat);
-  colorAttach.GetDescription()
-    .InitialLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-    .FinalLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-  RenderpassOptions option;
-  option.AddAttachment(colorAttach);
-  Subpass subpass_;
-  subpass_.AddColorAttachment(0);
-  if (gfxSetting.HasDepth) {
-    VkFormat depthFormat = g_FormatTable[gfxSetting.DepthStencilFormat];
-    GetGpuRef()->GetSupportedDepthFormat(&depthFormat);
-    RenderpassAttachment depthAttach =
-      RenderpassAttachment::CreateDepthStencil(depthFormat);
-    depthAttach.GetDescription()
-      .InitialLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-      .FinalLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    subpass_.AddDepthStencilAttachment(1);
-    option.AddAttachment(depthAttach);
-  }
-  option.AddSubPass(subpass_);
-  m_RenderPass = MakeShared<RenderPass>(GetDevice(), option);
-}
-
-void
-RenderViewport::AllocateRenderTargets(rhi::RenderViewportDesc& gfxSetting)
-{
-  if (m_RenderPass) {
-    VkFormat depthFormat = g_FormatTable[gfxSetting.DepthStencilFormat];
-    GetGpuRef()->GetSupportedDepthFormat(&depthFormat);
-    VkImage depthImage;
-    VkImageCreateInfo image = {};
-    image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image.imageType = VK_IMAGE_TYPE_2D;
-    image.format = depthFormat;
-    // Use example's height and width
-    image.extent = { GetWidth(), GetHeight(), 1 };
-    image.mipLevels = 1;
-    image.arrayLayers = 1;
-    image.samples = VK_SAMPLE_COUNT_1_BIT;
-    image.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    vkCreateImage(GetRawDevice(), &image, nullptr, &depthImage);
-
-    VkDeviceMemory depthMem;
-    // Allocate memory for the image (device local) and bind it to our image
-    VkMemoryAllocateInfo memAlloc = {};
-    memAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    VkMemoryRequirements memReqs;
-    vkGetImageMemoryRequirements(GetRawDevice(), depthImage, &memReqs);
-    memAlloc.allocationSize = memReqs.size;
-    GetDevice()->FindMemoryType(memReqs.memoryTypeBits,
-                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                &memAlloc.memoryTypeIndex);
-    vkAllocateMemory(GetRawDevice(), &memAlloc, nullptr, &depthMem);
-    vkBindImageMemory(GetRawDevice(), depthImage, depthMem, 0);
-
-    auto layoutCmd = k3d::StaticPointerCast<CommandContext>(
-      GetDevice()->NewCommandContext(rhi::ECMD_Graphics));
-    ImageMemoryBarrierParams params(
-      depthImage,
-      VK_IMAGE_LAYOUT_UNDEFINED,
-      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-    layoutCmd->Begin();
-    params.MipLevelCount(1)
-      .AspectMask(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
-      .LayerCount(1);
-    layoutCmd->PipelineBarrierImageMemory(params);
-    layoutCmd->End();
-    layoutCmd->Execute(false);
-
-    VkImageView depthView;
-    VkImageViewCreateInfo depthStencilView = {};
-    depthStencilView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    depthStencilView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    depthStencilView.format = depthFormat;
-    depthStencilView.subresourceRange = {};
-    depthStencilView.subresourceRange.aspectMask =
-      DetermineAspectMask(depthFormat);
-    depthStencilView.subresourceRange.baseMipLevel = 0;
-    depthStencilView.subresourceRange.levelCount = 1;
-    depthStencilView.subresourceRange.baseArrayLayer = 0;
-    depthStencilView.subresourceRange.layerCount = 1;
-    depthStencilView.image = depthImage;
-    vkCreateImageView(GetRawDevice(), &depthStencilView, nullptr, &depthView);
-
-    m_RenderTargets.resize(m_NumBufferCount);
-    RenderpassOptions option = m_RenderPass->GetOption();
-    VkFormat colorFmt = option.GetAttachments()[0].GetFormat();
-    for (uint32_t i = 0; i < m_NumBufferCount; ++i) {
-      VkImage colorImage = m_pSwapChain->GetBackImage(i);
-      auto colorImageInfo =
-        ImageViewInfo::CreateColorImageView(GetGpuRef(), colorFmt, colorImage);
-      VKLOG(
-        Info, "swapchain imageView created . (0x%0x).", colorImageInfo.first);
-      colorImageInfo.second.components = { VK_COMPONENT_SWIZZLE_R,
-                                           VK_COMPONENT_SWIZZLE_G,
-                                           VK_COMPONENT_SWIZZLE_B,
-                                           VK_COMPONENT_SWIZZLE_A };
-      auto colorTex = Texture::CreateFromSwapChain(
-        colorImage, colorImageInfo.first, colorImageInfo.second, GetDevice());
-
-      FrameBuffer::Attachment colorAttach(colorImageInfo.first);
-      FrameBuffer::Attachment depthAttach(depthView);
-      FrameBuffer::Option op;
-      op.Width = GetWidth();
-      op.Height = GetHeight();
-      op.Attachments.push_back(colorAttach);
-      op.Attachments.push_back(depthAttach);
-      auto framebuffer = SpFramebuffer(
-        new FrameBuffer(GetDevice(), m_RenderPass->GetPass(), op));
-      m_RenderTargets[i] = k3d::MakeShared<RenderTarget>(
-        GetDevice(), colorTex, framebuffer, m_RenderPass->GetPass());
-    }
-  }
-}
-
-VkRenderPass
-RenderViewport::GetRenderPass() const
-{
-  return m_RenderPass->GetPass();
-}
-#endif
 ::k3d::DynArray<GpuRef>
 Instance::EnumGpus()
 {
@@ -2219,23 +1919,6 @@ Instance::EnumGpus()
   }
   return gpus;
 }
-
-// DeviceAdapter::DeviceAdapter(GpuRef const & gpu)
-//	: m_Gpu(gpu)
-//{
-//	m_pDevice = MakeShared<Device>();
-//	m_pDevice->Create(this, gpu->m_Inst->WithValidation());
-//	//m_Gpu->m_Inst->AppendLogicalDevice(m_pDevice);
-//}
-//
-// DeviceAdapter::~DeviceAdapter()
-//{
-//}
-//
-// DeviceRef DeviceAdapter::GetDevice()
-//{
-//	return m_pDevice;
-//}
 
 Device::Device()
   : m_Gpu(nullptr)
@@ -2255,27 +1938,10 @@ Device::Release()
     return;
   vkDeviceWaitIdle(m_Device);
   VKLOG(Info, "Device Destroying .  -- %0x.", m_Device);
-  ///*if (!m_CachedDescriptorSetLayout.empty())
-  //{
-  //	m_CachedDescriptorSetLayout.erase(m_CachedDescriptorSetLayout.begin(),
-  //		m_CachedDescriptorSetLayout.end());
-  //}
-  // if (!m_CachedDescriptorPool.empty())
-  //{
-  //	m_CachedDescriptorPool.erase(m_CachedDescriptorPool.begin(),
-  //		m_CachedDescriptorPool.end());
-  //}
-  // if (!m_CachedPipelineLayout.empty())
-  //{
-  //	m_CachedPipelineLayout.erase(m_CachedPipelineLayout.begin(),
-  //		m_CachedPipelineLayout.end());
-  //}*/
-  // m_PendingPass.~vector();
-  // m_ResourceManager->~ResourceManager();
-  // m_ContextPool->~CommandContextPool();
   if (m_CmdBufManager) {
     m_CmdBufManager->~CommandBufferManager();
   }
+  vkDestroyCommandPool(m_Device, m_ImmediateCmdPool, nullptr);
   vkDestroyDevice(m_Device, nullptr);
   VKLOG(Info, "Device Destroyed .  -- %0x.", m_Device);
   m_Device = VK_NULL_HANDLE;
@@ -2287,25 +1953,35 @@ Device::Create(GpuRef const& gpu, bool withDebug)
   m_Gpu = gpu;
   m_Device = m_Gpu->CreateLogicDevice(withDebug);
   if (m_Device) {
-    // LoadVulkan(m_Gpu->m_Inst->m_Instance, m_Device);
+#ifdef VK_NO_PROTOTYPES
+    LoadVulkan(m_Gpu->m_Inst->m_Instance, m_Device);
+#endif
+    // Create Immediate Objects
+    vkGetDeviceQueue(m_Device, 0, 0, &m_ImmediateQueue);
+    if (m_ImmediateQueue)
+    {
+      VKLOG(Info, "Device::Create m_ImmediateQueue created.  -- %0x.", m_ImmediateQueue);
+    }
+    VkCommandPoolCreateInfo PoolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    PoolInfo.queueFamilyIndex = m_Gpu->m_GraphicsQueueIndex;
+    PoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    K3D_VK_VERIFY(vkCreateCommandPool(m_Device, &PoolInfo, nullptr, &m_ImmediateCmdPool));
+    if (m_ImmediateCmdPool)
+    {
+      VKLOG(Info, "Device::Create m_ImmediateCmdPool created.  -- %0x.", m_ImmediateCmdPool);
+    }
+
     if (withDebug) {
-      /*RHIRoot::SetupDebug(VK_DEBUG_REPORT_ERROR_BIT_EXT |
+      m_Gpu->m_Inst->SetupDebugging(VK_DEBUG_REPORT_ERROR_BIT_EXT |
                             VK_DEBUG_REPORT_WARNING_BIT_EXT |
                             VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
-                          DebugReportCallback);*/
+                          DebugReportCallback);
     }
     // m_ResourceManager = std::make_unique<ResourceManager>(SharedFromThis(),
-    // 1024, 1024);  m_ContextPool =
-    // std::make_unique<CommandContextPool>(SharedFromThis());
-    return rhi::IDevice::DeviceFound;
+    // 1024, 1024);
+    return k3d::IDevice::DeviceFound;
   }
-  return rhi::IDevice::DeviceNotFound;
-}
-
-RenderTargetRef
-Device::NewRenderTarget(rhi::RenderTargetLayout const& layout)
-{
-  return RenderTargetRef(new RenderTarget(SharedFromThis(), layout));
+  return k3d::IDevice::DeviceNotFound;
 }
 
 uint64
@@ -2324,7 +2000,7 @@ Device::InitCmdQueue(VkQueueFlags queueTypes,
 }
 
 VkShaderModule
-Device::CreateShaderModule(rhi::ShaderBundle const& Bundle)
+Device::CreateShaderModule(k3d::ShaderBundle const& Bundle)
 {
   VkShaderModule shaderModule;
   VkShaderModuleCreateInfo moduleCreateInfo;
@@ -2338,6 +2014,58 @@ Device::CreateShaderModule(rhi::ShaderBundle const& Bundle)
   K3D_VK_VERIFY(
     vkCreateShaderModule(m_Device, &moduleCreateInfo, NULL, &shaderModule));
   return shaderModule;
+}
+
+VkCommandBuffer
+Device::AllocateImmediateCommand()
+{
+  VkCommandBuffer RetCmd = VK_NULL_HANDLE;
+  VkCommandBufferAllocateInfo info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+  info.commandPool = m_ImmediateCmdPool;
+  info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  info.commandBufferCount = 1;
+  K3D_VK_VERIFY(vkAllocateCommandBuffers(m_Device, &info, &RetCmd));
+  return RetCmd;
+}
+
+SpRenderpass Device::GetOrCreateRenderPass(const k3d::RenderPassDesc & desc)
+{
+  uint64 Hash = HashRenderPassDesc(desc);
+  if (Hash != 0)
+  {
+    if (DeviceObjectCache::s_RenderPass.find(Hash) == std::end(DeviceObjectCache::s_RenderPass))
+    {
+      auto pRenderPass = MakeShared<RenderPass>(SharedFromThis(), desc);
+      DeviceObjectCache::s_RenderPass[Hash] = pRenderPass;
+    }
+    else
+    {
+      VKLOG(Debug, "RenderPass cache Hit. 0x%0x.", DeviceObjectCache::s_RenderPass[Hash]->NativeHandle());
+    }
+    return SpRenderpass(DeviceObjectCache::s_RenderPass[Hash]);
+  }
+  else
+  {
+    return nullptr;
+  }
+}
+
+SpFramebuffer
+Device::GetOrCreateFramebuffer(const k3d::RenderPassDesc& Info)
+{
+  uint64 Hash = HashAttachments(Info);
+  if (DeviceObjectCache::s_Framebuffer.find(Hash) == DeviceObjectCache::s_Framebuffer.end())
+  {
+    auto pRenderPass = CreateRenderPass(Info);
+    auto pFbo = MakeShared<FrameBuffer>(SharedFromThis(), 
+      StaticPointerCast<RenderPass>(pRenderPass), Info);
+    DeviceObjectCache::s_Framebuffer[Hash] = pFbo;
+  }
+  else
+  {
+    VKLOG(Debug, "Framebuffer Cache Hit! (0x%0x). ", DeviceObjectCache::s_Framebuffer[Hash]->NativeHandle());
+  }
+  return DeviceObjectCache::s_Framebuffer[Hash];
 }
 
 bool
@@ -2364,55 +2092,46 @@ Device::FindMemoryType(uint32 typeBits,
 
   return false;
 }
-#if 0
-CommandContextRef
-Device::NewCommandContext(rhi::ECommandType Type)
-{
-  if (!m_CmdBufManager) {
-    m_CmdBufManager = CmdBufManagerRef(new CommandBufferManager(
-      m_Device, VK_COMMAND_BUFFER_LEVEL_PRIMARY, m_Gpu->m_GraphicsQueueIndex));
-  }
-  return rhi::CommandContextRef(
-    new CommandContext(SharedFromThis(),
-                       m_CmdBufManager->RequestCommandBuffer(),
-                       VK_NULL_HANDLE,
-                       Type));
-  // return m_ContextPool->RequestContext(Type);
-}
-#endif
+
 SamplerRef
-Device::NewSampler(const rhi::SamplerState& samplerDesc)
+Device::NewSampler(const k3d::SamplerState& samplerDesc)
 {
   return MakeShared<Sampler>(SharedFromThis(), samplerDesc);
 }
 
-rhi::PipelineLayoutKey
-HashPipelineLayoutDesc(rhi::PipelineLayoutDesc const& desc)
+k3d::PipelineLayoutKey
+HashPipelineLayoutDesc(k3d::PipelineLayoutDesc const& desc)
 {
-  rhi::PipelineLayoutKey key;
+  k3d::PipelineLayoutKey key;
   key.BindingKey =
     util::Hash32((const char*)desc.Bindings.Data(),
-                 desc.Bindings.Count() * sizeof(rhi::shc::Binding));
+                 desc.Bindings.Count() * sizeof(k3d::shc::Binding));
   key.SetKey = util::Hash32((const char*)desc.Sets.Data(),
-                            desc.Sets.Count() * sizeof(rhi::shc::Set));
+                            desc.Sets.Count() * sizeof(k3d::shc::Set));
   key.UniformKey =
     util::Hash32((const char*)desc.Uniforms.Data(),
-                 desc.Uniforms.Count() * sizeof(rhi::shc::Uniform));
+                 desc.Uniforms.Count() * sizeof(k3d::shc::Uniform));
   return key;
 }
 
-rhi::PipelineLayoutRef
-Device::NewPipelineLayout(rhi::PipelineLayoutDesc const& table)
+k3d::PipelineLayoutRef
+Device::NewPipelineLayout(k3d::PipelineLayoutDesc const& table)
 {
   // Hash the table parameter here,
   // Lookup the layout by hash code
-  /*rhi::PipelineLayoutKey key = HashPipelineLayoutDesc(table);
+  /*k3d::PipelineLayoutKey key = HashPipelineLayoutDesc(table);
   if (m_CachedPipelineLayout.find(key) == m_CachedPipelineLayout.end())
   {
-  auto plRef = rhi::PipelineLayoutRef(new PipelineLayout(this, table));
+  auto plRef = k3d::PipelineLayoutRef(new PipelineLayout(this, table));
   m_CachedPipelineLayout.insert({ key, plRef });
   }*/
-  return rhi::PipelineLayoutRef(new PipelineLayout(SharedFromThis(), table));
+  return k3d::PipelineLayoutRef(new PipelineLayout(SharedFromThis(), table));
+}
+
+k3d::RenderPassRef
+Device::CreateRenderPass(k3d::RenderPassDesc const& RpDesc)
+{
+  return GetOrCreateRenderPass(RpDesc);
 }
 
 DescriptorAllocRef
@@ -2448,19 +2167,19 @@ Device::NewDescriptorSetLayout(BindingArray const& bindings)
     new DescriptorSetLayout(SharedFromThis(), bindings));
 }
 
-rhi::PipelineStateRef
-Device::CreateRenderPipelineState(rhi::RenderPipelineStateDesc const& Desc,
-                                  rhi::PipelineLayoutRef pPipelineLayout)
+k3d::PipelineStateRef
+Device::CreateRenderPipelineState(k3d::RenderPipelineStateDesc const& Desc,
+                                  k3d::PipelineLayoutRef pPipelineLayout,
+                                  k3d::RenderPassRef pRenderPass)
 {
   return MakeShared<RenderPipelineState>(
     SharedFromThis(),
-    Desc,
-    static_cast<PipelineLayout*>(pPipelineLayout.Get()));
+    Desc, pPipelineLayout, pRenderPass);
 }
 
-rhi::PipelineStateRef
-Device::CreateComputePipelineState(rhi::ComputePipelineStateDesc const& Desc,
-                                   rhi::PipelineLayoutRef pPipelineLayout)
+k3d::PipelineStateRef
+Device::CreateComputePipelineState(k3d::ComputePipelineStateDesc const& Desc,
+                                   k3d::PipelineLayoutRef pPipelineLayout)
 {
   return MakeShared<ComputePipelineState>(
     SharedFromThis(),
@@ -2474,13 +2193,13 @@ Device::CreateFence()
   return MakeShared<Fence>(SharedFromThis());
 }
 
-rhi::CommandQueueRef
-Device::CreateCommandQueue(rhi::ECommandType const& Type)
+k3d::CommandQueueRef
+Device::CreateCommandQueue(k3d::ECommandType const& Type)
 {
-  if (Type == rhi::ECMD_Graphics) {
+  if (Type == k3d::ECMD_Graphics) {
     return MakeShared<CommandQueue>(
       SharedFromThis(), VK_QUEUE_GRAPHICS_BIT, m_Gpu->m_GraphicsQueueIndex, 0);
-  } else if (Type == rhi::ECMD_Compute) {
+  } else if (Type == k3d::ECMD_Compute) {
     return MakeShared<CommandQueue>(
       SharedFromThis(), VK_QUEUE_COMPUTE_BIT, m_Gpu->m_ComputeQueueIndex, 0);
   }
@@ -2488,16 +2207,16 @@ Device::CreateCommandQueue(rhi::ECommandType const& Type)
 }
 
 GpuResourceRef
-Device::NewGpuResource(rhi::ResourceDesc const& Desc)
+Device::NewGpuResource(k3d::ResourceDesc const& Desc)
 {
-  rhi::IGpuResource* resource = nullptr;
+  k3d::IGpuResource* resource = nullptr;
   switch (Desc.Type) {
-    case rhi::EGT_Buffer:
+    case k3d::EGT_Buffer:
       resource = new Buffer(SharedFromThis(), Desc);
       break;
-    case rhi::EGT_Texture1D:
+    case k3d::EGT_Texture1D:
       break;
-    case rhi::EGT_Texture2D:
+    case k3d::EGT_Texture2D:
       resource = new Texture(SharedFromThis(), Desc);
       break;
     default:
@@ -2507,8 +2226,8 @@ Device::NewGpuResource(rhi::ResourceDesc const& Desc)
 }
 
 ShaderResourceViewRef
-Device::NewShaderResourceView(rhi::GpuResourceRef pRes,
-                              rhi::ResourceViewDesc const& desc)
+Device::NewShaderResourceView(k3d::GpuResourceRef pRes,
+                              k3d::ResourceViewDesc const& desc)
 {
   return MakeShared<ShaderResourceView>(SharedFromThis(), desc, pRes);
 }
@@ -2527,9 +2246,9 @@ Device::NewSemaphore()
 }
 
 void
-Device::QueryTextureSubResourceLayout(rhi::TextureRef resource,
-                                      rhi::TextureResourceSpec const& spec,
-                                      rhi::SubResourceLayout* layout)
+Device::QueryTextureSubResourceLayout(k3d::TextureRef resource,
+                                      k3d::TextureResourceSpec const& spec,
+                                      k3d::SubResourceLayout* layout)
 {
   K3D_ASSERT(resource);
   auto texture = StaticPointerCast<Texture>(resource);
@@ -2614,28 +2333,29 @@ Instance::Release()
 }
 
 void
-Instance::EnumDevices(DynArray<rhi::DeviceRef>& Devices)
+Instance::EnumDevices(DynArray<k3d::DeviceRef>& Devices)
 {
   auto GpuRefs = EnumGpus();
   for (auto& gpu : GpuRefs) {
     auto pDevice = new Device;
     pDevice->Create(gpu->SharedFromThis(), WithValidation());
-    Devices.Append(rhi::DeviceRef(pDevice));
+    Devices.Append(k3d::DeviceRef(pDevice));
   }
 }
 
-rhi::SwapChainRef
-Instance::CreateSwapchain(rhi::CommandQueueRef pCommandQueue,
+k3d::SwapChainRef
+Instance::CreateSwapchain(k3d::CommandQueueRef pCommandQueue,
                           void* nPtr,
-                          rhi::SwapChainDesc& Desc)
+                          k3d::SwapChainDesc& Desc)
 {
   SpCmdQueue pQueue = StaticPointerCast<CommandQueue>(pCommandQueue);
   return MakeShared<SwapChain>(pQueue->SharedDevice(), nPtr, Desc);
 }
 
+#ifdef VK_NO_PROTOTYPES
 #define __VK_GLOBAL_PROC_GET__(name, functor)                                  \
   gp##name = reinterpret_cast<PFN_vk##name>(functor("vk" K3D_STRINGIFY(name)))
-
+#endif
 void
 Instance::LoadGlobalProcs()
 {
@@ -2679,7 +2399,7 @@ Instance::EnumExtsAndLayers()
       nullptr, &extCount, gVkExtProps.Data()));
   }
   VKLOG(Info,
-        ">> Instance::EnumLayersAndExts <<\n\n"
+        ">> Instance::EnumLayersAndExts <<\n"
         "=================================>> layerCount = %d.\n"
         "=================================>> extensionCount = %d.\n",
         layerCount,
@@ -2736,6 +2456,7 @@ Instance::ExtractEnabledExtsAndLayers()
 void
 Instance::LoadInstanceProcs()
 {
+  CreateDebugReport = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(m_Instance, "vkCreateDebugReportCallbackEXT");
 #ifdef VK_NO_PROTOTYPES
   GET_INSTANCE_PROC_ADDR(m_Instance, GetPhysicalDeviceSurfaceSupportKHR);
   GET_INSTANCE_PROC_ADDR(m_Instance, GetPhysicalDeviceSurfaceCapabilitiesKHR);
@@ -2839,31 +2560,396 @@ Instance::SetupDebugging(VkDebugReportFlagsEXT flags,
   dbgCreateInfo.pfnCallback = callBack;
   dbgCreateInfo.pUserData = NULL;
   dbgCreateInfo.flags = flags;
-  // K3D_VK_VERIFY(vkCreateDebugReportCallbackEXT(m_Instance, &dbgCreateInfo,
-  // NULL, &m_DebugMsgCallback));
+  K3D_VK_VERIFY(CreateDebugReport(m_Instance, &dbgCreateInfo, NULL, &m_DebugMsgCallback));
 }
 
 void
 Instance::FreeDebugCallback()
 {
   if (m_Instance && m_DebugMsgCallback) {
-    // vkDestroyDebugReportCallbackEXT(m_Instance, m_DebugMsgCallback, nullptr);
+    //vkDestroyDebugReportCallbackEXT(m_Instance, m_DebugMsgCallback, nullptr);
     m_DebugMsgCallback = VK_NULL_HANDLE;
   }
 }
 
-RenderViewportSp RHIRoot::s_Vp;
 
-void
-RHIRoot::AddViewport(RenderViewportSp vp)
+CommandBufferManager::CommandBufferManager(VkDevice gpu, VkCommandBufferLevel bufferLevel,
+  unsigned graphicsQueueIndex)
+  : m_Device(gpu)
+  , m_CommandBufferLevel(bufferLevel)
+  , m_Count(0)
 {
-  s_Vp = vp;
+  // RESET_COMMAND_BUFFER_BIT allows command buffers to be reset individually.
+  VkCommandPoolCreateInfo info = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+  info.queueFamilyIndex = graphicsQueueIndex;
+  info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  K3D_VK_VERIFY(vkCreateCommandPool(m_Device, &info, nullptr, &m_Pool));
 }
 
-RenderViewportSp
-RHIRoot::GetViewport(int index)
+CommandBufferManager::~CommandBufferManager()
 {
-  return s_Vp;
+  Destroy();
+}
+
+void CommandBufferManager::Destroy()
+{
+  if (!m_Pool)
+    return;
+  vkDeviceWaitIdle(m_Device);
+  VKLOG(Info, "CommandBufferManager destroy. -- 0x%0x.", m_Pool);
+  vkFreeCommandBuffers(m_Device, m_Pool, m_Buffers.Count(), m_Buffers.Data());
+  vkDestroyCommandPool(m_Device, m_Pool, nullptr);
+  m_Pool = VK_NULL_HANDLE;
+}
+
+void CommandBufferManager::BeginFrame()
+{
+  m_Count = 0;
+}
+
+VkCommandBuffer CommandBufferManager::RequestCommandBuffer()
+{
+  // Either we recycle a previously allocated command buffer, or create a new one.
+  VkCommandBuffer ret = VK_NULL_HANDLE;
+  if (m_Count < m_Buffers.Count())
+  {
+    ret = m_Buffers[m_Count++];
+    K3D_VK_VERIFY(vkResetCommandBuffer(ret, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT));
+  }
+  else
+  {
+    VkCommandBufferAllocateInfo info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    info.commandPool = m_Pool;
+    info.level = m_CommandBufferLevel;
+    info.commandBufferCount = 1;
+    K3D_VK_VERIFY(vkAllocateCommandBuffers(m_Device, &info, &ret));
+    m_Buffers.Append(ret);
+
+    m_Count++;
+  }
+
+  return ret;
+}
+
+Gpu::Gpu(VkPhysicalDevice const& gpu, InstanceRef const& pInst)
+  : m_Inst(pInst)
+  , m_LogicalDevice(VK_NULL_HANDLE)
+  , m_PhysicalGpu(gpu)
+{
+  vkGetPhysicalDeviceProperties(m_PhysicalGpu, &m_Prop);
+  vkGetPhysicalDeviceMemoryProperties(m_PhysicalGpu, &m_MemProp);
+  vkGetPhysicalDeviceFeatures(m_PhysicalGpu, &m_Features);
+  VKLOG(Info, "Gpu: %s", m_Prop.deviceName);
+  QuerySupportQueues();
+}
+
+void Gpu::QuerySupportQueues()
+{
+  uint32 queueCount = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(m_PhysicalGpu, &queueCount, NULL);
+  if (queueCount < 1)
+    return;
+  m_QueueProps.Resize(queueCount);
+  vkGetPhysicalDeviceQueueFamilyProperties(m_PhysicalGpu, &queueCount, m_QueueProps.Data());
+  uint32 qId = 0;
+  for (qId = 0; qId < queueCount; qId++)
+  {
+    if (m_QueueProps[qId].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+    {
+      m_GraphicsQueueIndex = qId;
+      VKLOG(Info, "Device::graphicsQueueIndex(%d) queueFlags(%d).", m_GraphicsQueueIndex, m_QueueProps[qId].queueFlags);
+      break;
+    }
+  }
+  for (qId = 0; qId < queueCount; qId++)
+  {
+    if (m_QueueProps[qId].queueFlags & VK_QUEUE_COMPUTE_BIT)
+    {
+      m_ComputeQueueIndex = qId;
+      VKLOG(Info, "Device::ComputeQueueIndex(%d).", m_ComputeQueueIndex);
+      break;
+    }
+  }
+  for (qId = 0; qId < queueCount; qId++)
+  {
+    if (m_QueueProps[qId].queueFlags & VK_QUEUE_TRANSFER_BIT)
+    {
+      m_CopyQueueIndex = qId;
+      VKLOG(Info, "Device::CopyQueueIndex(%d).", m_CopyQueueIndex);
+      break;
+    }
+  }
+}
+
+#define __VK_GET_DEVICE_PROC__(name, getDeviceProc, device) \
+if(!vk##name) \
+{\
+vk##name = (PFN_vk##name)getDeviceProc(device, "vk" K3D_STRINGIFY(name)); \
+if (!vk##name) \
+{\
+VKLOG(Fatal, "LoadDeviceProcs::" K3D_STRINGIFY(name) " not exist!" );\
+exit(-1);\
+}\
+}
+
+void Gpu::LoadDeviceProcs()
+{
+#ifdef VK_NO_PROTOTYPES
+  if (!fpDestroyDevice)
+  {
+    fpDestroyDevice = (PFN_vkDestroyDevice)m_Inst->fpGetDeviceProcAddr(m_LogicalDevice, "vkDestroyDevice");
+  }
+  if (!fpFreeCommandBuffers)
+  {
+    fpFreeCommandBuffers = (PFN_vkFreeCommandBuffers)m_Inst->fpGetDeviceProcAddr(m_LogicalDevice, "vkFreeCommandBuffers");
+  }
+  if (!fpCreateCommandPool)
+  {
+    fpCreateCommandPool = (PFN_vkCreateCommandPool)m_Inst->fpGetDeviceProcAddr(m_LogicalDevice, "vkCreateCommandPool");
+  }
+  if (!fpAllocateCommandBuffers)
+  {
+    fpAllocateCommandBuffers = (PFN_vkAllocateCommandBuffers)m_Inst->fpGetDeviceProcAddr(m_LogicalDevice, "vkAllocateCommandBuffers");
+  }
+  __VK_GET_DEVICE_PROC__(DestroyDevice, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetDeviceQueue, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(QueueSubmit, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(QueueWaitIdle, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(QueuePresentKHR, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DeviceWaitIdle, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(AllocateMemory, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(FreeMemory, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(MapMemory, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(UnmapMemory, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(FlushMappedMemoryRanges, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(InvalidateMappedMemoryRanges, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetDeviceMemoryCommitment, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(BindBufferMemory, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(BindImageMemory, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetBufferMemoryRequirements, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetImageMemoryRequirements, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetImageSparseMemoryRequirements, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(QueueBindSparse, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateFence, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyFence, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(ResetFences, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetFenceStatus, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(WaitForFences, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateSemaphore, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroySemaphore, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateEvent, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyEvent, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetEventStatus, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(SetEvent, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(ResetEvent, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateQueryPool, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyQueryPool, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetQueryPoolResults, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateBufferView, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyBufferView, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateImage, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyImage, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetImageSubresourceLayout, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateImageView, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyImageView, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateShaderModule, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyShaderModule, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreatePipelineCache, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyPipelineCache, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetPipelineCacheData, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(MergePipelineCaches, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateGraphicsPipelines, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateComputePipelines, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyPipeline, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreatePipelineLayout, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyPipelineLayout, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateSampler, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroySampler, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateDescriptorSetLayout, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyDescriptorSetLayout, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateDescriptorPool, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyDescriptorPool, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(ResetDescriptorPool, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(AllocateDescriptorSets, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(FreeDescriptorSets, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(UpdateDescriptorSets, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateFramebuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyFramebuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateRenderPass, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyRenderPass, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetRenderAreaGranularity, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateCommandPool, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroyCommandPool, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(ResetCommandPool, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(AllocateCommandBuffers, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(FreeCommandBuffers, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(BeginCommandBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(EndCommandBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(ResetCommandBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdBindPipeline, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetViewport, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetScissor, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetLineWidth, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetDepthBias, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetBlendConstants, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetDepthBounds, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetStencilCompareMask, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetStencilWriteMask, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetStencilReference, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdBindDescriptorSets, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdBindIndexBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdBindVertexBuffers, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdDraw, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdDrawIndexed, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdDrawIndirect, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdDrawIndexedIndirect, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdDispatch, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdDispatchIndirect, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdCopyBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdCopyImage, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdBlitImage, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdCopyBufferToImage, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdCopyImageToBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdUpdateBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdFillBuffer, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdClearColorImage, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdClearDepthStencilImage, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdClearAttachments, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdResolveImage, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdSetEvent, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdResetEvent, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdWaitEvents, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdPipelineBarrier, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdBeginQuery, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdEndQuery, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdResetQueryPool, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdWriteTimestamp, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdCopyQueryPoolResults, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdPushConstants, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdBeginRenderPass, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdNextSubpass, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdEndRenderPass, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CmdExecuteCommands, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(AcquireNextImageKHR, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(CreateSwapchainKHR, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(DestroySwapchainKHR, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+  __VK_GET_DEVICE_PROC__(GetSwapchainImagesKHR, m_Inst->fpGetDeviceProcAddr, m_LogicalDevice);
+#endif
+}
+
+Gpu::~Gpu()
+{
+  VKLOG(Info, "Gpu Destroyed....");
+  if (m_PhysicalGpu)
+  {
+    m_PhysicalGpu = VK_NULL_HANDLE;
+  }
+}
+
+VkDevice Gpu::CreateLogicDevice(bool enableValidation)
+{
+  if (!m_LogicalDevice)
+  {
+    std::array<float, 1> queuePriorities = { 0.0f };
+    VkDeviceQueueCreateInfo queueCreateInfo = {};
+    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queueCreateInfo.queueFamilyIndex = m_GraphicsQueueIndex;
+    queueCreateInfo.queueCount = 1;
+    queueCreateInfo.pQueuePriorities = queuePriorities.data();
+
+    std::vector<const char*> enabledExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    VkDeviceCreateInfo deviceCreateInfo = {};
+    deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    deviceCreateInfo.pNext = NULL;
+    deviceCreateInfo.queueCreateInfoCount = 1;
+    deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
+    deviceCreateInfo.pEnabledFeatures = &m_Features;
+
+    if (enableValidation)
+    {
+      deviceCreateInfo.enabledLayerCount = 1;
+      deviceCreateInfo.ppEnabledLayerNames = g_ValidationLayerNames;
+    }
+
+    if (enabledExtensions.size() > 0)
+    {
+      deviceCreateInfo.enabledExtensionCount = (uint32_t)enabledExtensions.size();
+      deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
+    }
+    K3D_VK_VERIFY(vkCreateDevice(m_PhysicalGpu, &deviceCreateInfo, nullptr, &m_LogicalDevice));
+
+    LoadDeviceProcs();
+  }
+  return m_LogicalDevice;
+}
+
+VkBool32 Gpu::GetSupportedDepthFormat(VkFormat * depthFormat)
+{
+  // Since all depth formats may be optional, we need to find a suitable depth format to use
+  // Start with the highest precision packed format
+  std::vector<VkFormat> depthFormats = {
+    VK_FORMAT_D32_SFLOAT_S8_UINT,
+    VK_FORMAT_D32_SFLOAT,
+    VK_FORMAT_D24_UNORM_S8_UINT,
+    VK_FORMAT_D16_UNORM_S8_UINT,
+    VK_FORMAT_D16_UNORM
+  };
+
+  for (auto& format : depthFormats)
+  {
+    VkFormatProperties formatProps;
+    vkGetPhysicalDeviceFormatProperties(m_PhysicalGpu, format, &formatProps);
+    // Format must support depth stencil attachment for optimal tiling
+    if (formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+    {
+      *depthFormat = format;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+VkResult Gpu::GetSurfaceSupportKHR(uint32_t queueFamilyIndex, VkSurfaceKHR surface, VkBool32 * pSupported)
+{
+  return vkGetPhysicalDeviceSurfaceSupportKHR(m_PhysicalGpu, queueFamilyIndex, surface, pSupported);
+}
+
+VkResult Gpu::GetSurfaceCapabilitiesKHR(VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR * pSurfaceCapabilities)
+{
+  return vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_PhysicalGpu, surface, pSurfaceCapabilities);
+}
+
+VkResult Gpu::GetSurfaceFormatsKHR(VkSurfaceKHR surface, uint32_t * pSurfaceFormatCount, VkSurfaceFormatKHR * pSurfaceFormats)
+{
+  return vkGetPhysicalDeviceSurfaceFormatsKHR(m_PhysicalGpu, surface, pSurfaceFormatCount, pSurfaceFormats);
+}
+
+VkResult Gpu::GetSurfacePresentModesKHR(VkSurfaceKHR surface, uint32_t * pPresentModeCount, VkPresentModeKHR * pPresentModes)
+{
+  return vkGetPhysicalDeviceSurfacePresentModesKHR(m_PhysicalGpu, surface, pPresentModeCount, pPresentModes);
+}
+
+void Gpu::DestroyDevice()
+{
+  vkDestroyDevice(m_LogicalDevice, nullptr);
+}
+
+void Gpu::FreeCommandBuffers(VkCommandPool pool, uint32 count, VkCommandBuffer * cmd)
+{
+  vkFreeCommandBuffers(m_LogicalDevice, pool, count, cmd);
+}
+
+VkResult Gpu::CreateCommdPool(const VkCommandPoolCreateInfo * pCreateInfo, const VkAllocationCallbacks * pAllocator, VkCommandPool * pCommandPool)
+{
+  return vkCreateCommandPool(m_LogicalDevice, pCreateInfo, pAllocator, pCommandPool);
+}
+
+VkResult Gpu::AllocateCommandBuffers(const VkCommandBufferAllocateInfo * pAllocateInfo, VkCommandBuffer * pCommandBuffers)
+{
+  return vkAllocateCommandBuffers(m_LogicalDevice, pAllocateInfo, pCommandBuffers);
 }
 
 void
@@ -2915,7 +3001,7 @@ public:
     }
   }
 
-  rhi::FactoryRef GetFactory() { return m_Instance; }
+  k3d::FactoryRef GetFactory() { return m_Instance; }
 
   void Start() override
   {

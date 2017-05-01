@@ -30,12 +30,11 @@ private:
 #else
 	SharedPtr<IMetalRHI> m_pRHI;
 #endif
-	rhi::DeviceRef m_TestDevice;
+	k3d::DeviceRef m_TestDevice;
 };
 
 K3D_APP_MAIN(UnitTestRHIDevice);
 
-using namespace rhi;
 using namespace k3d;
 
 bool UnitTestRHIDevice::OnInit()
@@ -48,7 +47,7 @@ bool UnitTestRHIDevice::OnInit()
 		m_pRHI->Initialize("UnitTestRHIDevice", false);
 		m_pRHI->Start();
     auto pFactory = m_pRHI->GetFactory();
-    DynArray<rhi::DeviceRef> Devices;
+    DynArray<k3d::DeviceRef> Devices;
     pFactory->EnumDevices(Devices);
 		m_TestDevice = Devices[0];
 	}

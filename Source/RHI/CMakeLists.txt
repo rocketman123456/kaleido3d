@@ -1,3 +1,8 @@
+set(RHIUtil_SRCS RHIUtil.h RHIUtil.cpp)
+source_group(RHIUtil FILES ${RHIUtil_SRCS})
+add_library(RHIUtil ${RHIUtil_SRCS})
+set_target_properties(RHIUtil PROPERTIES FOLDER "Runtime/RHI")
+
 if(WIN32)
 	if(BUILD_WITH_D3D12)
 		add_subdirectory(D3D12)
